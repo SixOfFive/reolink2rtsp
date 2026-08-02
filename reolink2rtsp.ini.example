@@ -16,10 +16,15 @@
 bind = 0.0.0.0
 
 ; Cameras that do not set rtsp_port explicitly get one from here, incrementing.
-; NOTE: on Linux/macOS, ports below 1024 require root or
-;   setcap 'cap_net_bind_service=+ep' $(readlink -f $(which python3))
-; If you would rather not do that, set base_port = 8554.
-base_port = 554
+;
+; 8554 is the default because it needs no privileges anywhere. 554 is the
+; IANA-registered RTSP port (so clients can omit it from the URL), but on
+; Linux/macOS anything below 1024 requires root. If you want 554, either
+;   sudo setcap 'cap_net_bind_service=+ep' "$(readlink -f "$(which python3)")"
+; or run under a service manager that binds the socket for you. Windows has no
+; such restriction. reolink2rtsp fails with a clear message rather than a
+; traceback if it cannot bind.
+base_port = 8554
 
 ; RTP packet size. Lower it if you see loss over Wi-Fi or a VPN.
 mtu = 1400
@@ -53,27 +58,27 @@ users = test:test
 [camera:driveway]
 host       = 192.168.15.60
 username   = admin
-password   = ${REOLINK_DRIVEWAY_PASSWORD:-${REOLINK_PASSWORD}}
+password   = ${REOLINK_PASSWORD}
 stream     = main
-rtsp_port  = 554
+rtsp_port  = 8554
 users      = test:test
 
 ; Home Assistant device "Living Room"  (HA entities are named front_*)
 [camera:living_room]
 host       = 192.168.15.62
 username   = admin
-password   = ${REOLINK_LIVING_ROOM_PASSWORD:-${REOLINK_PASSWORD}}
+password   = ${REOLINK_PASSWORD}
 stream     = main
-rtsp_port  = 555
+rtsp_port  = 8555
 users      = test:test
 
 ; Home Assistant device "Work Area"  (HA entities are named driveway_*)
 [camera:work_area]
 host       = 192.168.15.64
 username   = admin
-password   = ${REOLINK_WORK_AREA_PASSWORD:-${REOLINK_PASSWORD}}
+password   = ${REOLINK_PASSWORD}
 stream     = main
-rtsp_port  = 556
+rtsp_port  = 8556
 users      = test:test
 
 
@@ -87,9 +92,9 @@ users      = test:test
 enabled    = false
 host       = 192.168.15.63
 username   = admin
-password   = ${REOLINK_BACK_YARD_PASSWORD:-${REOLINK_PASSWORD}}
+password   = ${REOLINK_PASSWORD}
 stream     = main
-rtsp_port  = 557
+rtsp_port  = 8557
 users      = test:test
 
 ; Home Assistant device "Garage"  (HA entities are named back_door_*)
@@ -98,7 +103,7 @@ users      = test:test
 enabled    = false
 host       = 192.168.15.61
 username   = admin
-password   = ${REOLINK_GARAGE_PASSWORD:-${REOLINK_PASSWORD}}
+password   = ${REOLINK_PASSWORD}
 stream     = main
-rtsp_port  = 558
+rtsp_port  = 8558
 users      = test:test

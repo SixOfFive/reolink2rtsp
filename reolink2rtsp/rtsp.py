@@ -491,10 +491,11 @@ class RtspConnection(object):
         session.packetizer = RtpPacketizer(
             source.codec or "H264", payload_type=PAYLOAD_TYPE, mtu=self.server.mtu
         )
-        session.playing = True
-        session.task = asyncio.ensure_future(self._pump(session))
 
         _LOG.info("%s: PLAY %s", self._peer_str(), source.name)
+        # The response must reach the client before any interleaved RTP, or the
+        # client parses media bytes as the reply and desynchronises. Only start
+        # pumping once the reply is on the wire.
         await self._respond(
             request,
             200,
@@ -506,6 +507,9 @@ class RtspConnection(object):
                 ),
             },
         )
+
+        session.playing = True
+        session.task = asyncio.ensure_future(self._pump(session))
 
     async def _do_pause(self, request):
         session = self._session_for(request)
@@ -535,7 +539,7 @@ class RtspConnection(object):
         """Pull access units and push RTP until the session ends."""
         packetizer = session.packetizer
         subscriber = session.subscriber
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
             while session.playing:
                 unit = await subscriber.queue.get()
@@ -550,12 +554,7 @@ class RtspConnection(object):
                         blob += packet
                     await self._send(bytes(blob))
                 else:
-                    target = (session.client_addr, session.client_rtp_port)
-                    for packet in packets:
-                        try:
-                            await loop.sock_sendto(session.udp_socket, packet, target)
-                        except (BlockingIOError, InterruptedError):
-                            pass
+                    await self._send_udp(session, packets, loop)
         except asyncio.CancelledError:
             raise
         except (ConnectionResetError, BrokenPipeError):
@@ -565,8 +564,37 @@ class RtspConnection(object):
         finally:
             session.playing = False
 
+    async def _send_udp(self, session, packets, loop):
+        """Send an access unit over UDP, paced so we do not overrun buffers.
 
-def _bind_udp_pair(bind_addr, first=20000, last=30000):
+        A 2560x1440 key frame is ~165 KB, which is well over a hundred
+        datagrams. Firing them back to back overruns the socket send buffer and
+        the receiver's, and the client decodes a torn key frame and then stalls.
+        Spreading the burst over a few milliseconds fixes it, and is still far
+        inside the inter-frame gap.
+        """
+        target = (session.client_addr, session.client_rtp_port)
+        sock = session.udp_socket
+        burst = self.server.udp_burst
+        delay = self.server.udp_burst_delay
+
+        for index, packet in enumerate(packets):
+            while True:
+                try:
+                    await loop.sock_sendto(sock, packet, target)
+                    break
+                except (BlockingIOError, InterruptedError):
+                    # Buffer momentarily full: wait rather than lose the packet,
+                    # because a dropped fragment destroys the whole frame.
+                    await asyncio.sleep(0.001)
+                except OSError as exc:
+                    _LOG.debug("%s: UDP send failed: %s", self._peer_str(), exc)
+                    return
+            if burst and delay and (index + 1) % burst == 0:
+                await asyncio.sleep(delay)
+
+
+def _bind_udp_pair(bind_addr, first=20000, last=30000, sndbuf=4 * 1024 * 1024):
     """Bind an even RTP port and the odd RTCP port above it."""
     for port in range(first, last, 2):
         rtp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -578,6 +606,11 @@ def _bind_udp_pair(bind_addr, first=20000, last=30000):
             rtp.close()
             rtcp.close()
             continue
+        try:
+            # A big send buffer absorbs key-frame bursts.
+            rtp.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, sndbuf)
+        except OSError:
+            pass
         rtp.setblocking(False)
         rtcp.setblocking(False)
         return rtp, rtcp, port, port + 1
@@ -588,7 +621,8 @@ class RtspServer(object):
     """Serves one or more camera sources on a single TCP port."""
 
     def __init__(self, sources, bind="0.0.0.0", port=554, mtu=1400,
-                 users=None, realm=SERVER_NAME, describe_timeout=20.0):
+                 users=None, realm=SERVER_NAME, describe_timeout=20.0,
+                 udp_burst=12, udp_burst_delay=0.0015):
         self.sources = sources  # {path: CameraSource}
         self.bind = bind
         self.port = port
@@ -596,6 +630,10 @@ class RtspServer(object):
         self.users = dict(users or {})
         self.realm = realm
         self.describe_timeout = describe_timeout
+        # UDP pacing: yield after every `udp_burst` datagrams for
+        # `udp_burst_delay` seconds so key-frame bursts do not overrun buffers.
+        self.udp_burst = udp_burst
+        self.udp_burst_delay = udp_burst_delay
         self._server = None
 
     @property

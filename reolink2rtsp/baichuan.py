@@ -23,8 +23,14 @@ Every message starts with a header, little-endian throughout::
     20      4     payload_offset  (24-byte headers only)
 
 The body is split at ``payload_offset``: the first part is an XML "extension"
-describing what follows, the remainder is the payload. XML is encrypted (see
-:mod:`.crypto`); binary media payloads are **not**.
+describing what follows, the remainder is the payload. When ``payload_offset``
+is 0 the whole body is the payload.
+
+XML bodies are encrypted (see :mod:`.crypto`). Media is only *partly* encrypted:
+the message that begins a video frame is AES-CFB encrypted, and the rest of that
+frame follows in the clear, as do the 32-byte stream-info blocks. Decrypting
+every media message - the obvious reading - corrupts everything past the first
+message of each frame. See :meth:`BaichuanClient._decrypt_media`.
 """
 
 from __future__ import annotations
@@ -193,6 +199,31 @@ def _header_len(msg_class):
     return 24 if msg_class in (CLASS_MODERN, 0x0000) else 20
 
 
+# BcMedia frame magics: "N0dc" = I-frame, "N1dc" = P-frame, N an ASCII digit.
+_VIDEO_CODECS = (b"H264", b"H265")
+
+
+def _frame_total_length(blob):
+    """Total on-the-wire length of the BcMedia frame starting at *blob*.
+
+    Returns None when *blob* does not begin with a plausible frame header, which
+    is how we detect that a message was not the start of a frame.
+    """
+    if len(blob) < 24:
+        return None
+    magic = blob[0:4]
+    if magic[1:4] not in (b"0dc", b"1dc") or not (0x30 <= magic[0] <= 0x39):
+        return None
+    if blob[4:8] not in _VIDEO_CODECS:
+        return None
+    payload_size, extra_size = struct.unpack_from("<II", blob, 8)
+    # Guard against nonsense from a bad decryption.
+    if payload_size > 16 * 1024 * 1024 or extra_size > 4096:
+        return None
+    padding = -payload_size % 8
+    return 24 + extra_size + payload_size + padding
+
+
 class BaichuanClient(object):
     """A logged-in connection to one camera."""
 
@@ -215,7 +246,12 @@ class BaichuanClient(object):
         self._pending = {}
         # msg_num -> asyncio.Queue for streaming video payloads
         self._video_queues = {}
+        # msg_num -> bytes still to come for the frame in progress. Only the
+        # message starting a frame is encrypted; see _decrypt_media.
+        self._media_remaining = {}
         self._closed = asyncio.Event()
+        self._drops = 0
+        self._last_drop_log = 0
         self.device_info = {}
 
     # ------------------------------------------------------------------ #
@@ -370,22 +406,24 @@ class BaichuanClient(object):
             window = window[-3:] + bytearray(await self._read_exactly(64))
 
     def _dispatch(self, msg):
-        # Video payloads stream in under the msg_num of the original request.
-        queue = self._video_queues.get(msg.msg_num)
-        if queue is not None and msg.msg_id == MSG_VIDEO:
-            if msg.payload:
-                queue.put_nowait(msg.payload)
-            elif msg.extension and not (
-                msg.has_status and msg.response_code not in (0, 200, 201, 300)
-            ):
-                # Some firmwares put the media bytes in the body with no
-                # payload_offset set at all.
-                queue.put_nowait(msg.extension)
-            return
-
+        # A waiting request always wins: the camera's acknowledgement of the
+        # Preview command carries the same msg_num as the media that follows it,
+        # so checking the video queue first would swallow the reply.
         future = self._pending.pop((msg.msg_id, msg.msg_num), None)
         if future is not None and not future.done():
             future.set_result(msg)
+            return
+
+        # Everything after that under the same msg_num is media.
+        queue = self._video_queues.get(msg.msg_num)
+        if queue is not None and msg.msg_id == MSG_VIDEO:
+            # When payload_offset is 0 the whole body is media, and the reader
+            # will have put it in `extension`.
+            blob = msg.payload or msg.extension
+            if blob and not (
+                msg.has_status and msg.response_code not in (0, 200, 201, 300)
+            ):
+                self._enqueue(queue, self._decrypt_media(blob, msg.msg_num))
             return
 
         if msg.msg_id == 234:  # heartbeat from the camera
@@ -393,6 +431,81 @@ class BaichuanClient(object):
             return
 
         _LOG.debug("%s: unsolicited %r", self.host, msg)
+
+    def _decrypt_media(self, blob, msg_num):
+        """Decrypt one media message body.
+
+        Only the message that *starts* a frame is encrypted; the remainder of
+        that frame streams in the clear. That is presumably a performance choice
+        on the camera's part - a 2560x1440 key frame is ~165 KB, and scrambling
+        its header and first slice bytes already makes the stream useless
+        without the key.
+
+        So the rule is:
+
+        * 32-byte ``1001``/``1002`` stream-info blocks - plaintext, passed through.
+        * the message beginning a frame - AES-CFB from the fixed IV.
+        * every following message of that frame - plaintext, passed through.
+
+        The frame length comes from the decrypted header, which is what lets us
+        tell the two cases apart.
+        """
+        if self._aes_key is None:
+            return blob
+        if len(blob) == 32 and blob[0:4] in (b"1001", b"1002"):
+            return blob  # stream info: never encrypted, not part of a frame
+
+        remaining = self._media_remaining.get(msg_num, 0)
+        if remaining > 0:
+            # Continuation of the frame already in progress: sent in the clear.
+            self._media_remaining[msg_num] = remaining - len(blob)
+            return blob
+
+        decrypted = aes_cfb_decrypt(blob, self._aes_key)
+        total = _frame_total_length(decrypted)
+        if total is not None:
+            self._media_remaining[msg_num] = max(0, total - len(blob))
+            return decrypted
+
+        # Not a recognisable frame header. If the raw bytes parse instead, trust
+        # those; otherwise keep the decrypted form and resynchronise next frame.
+        self._media_remaining[msg_num] = 0
+        return blob if _frame_total_length(blob) is not None else decrypted
+
+    def _enqueue(self, queue, chunk):
+        """Queue a media chunk, dropping the oldest if the consumer fell behind.
+
+        Blocking here would stall the whole read loop (including command replies
+        and keepalives), so a slow consumer loses data instead. The BcMedia
+        parser resynchronises on the next frame magic, and RTSP clients resync on
+        the next key frame.
+        """
+        try:
+            queue.put_nowait(chunk)
+            return
+        except asyncio.QueueFull:
+            pass
+
+        dropped = 0
+        while True:
+            try:
+                queue.get_nowait()
+                dropped += 1
+            except asyncio.QueueEmpty:
+                break
+            try:
+                queue.put_nowait(chunk)
+                break
+            except asyncio.QueueFull:
+                continue
+        self._drops += dropped
+        if self._drops - self._last_drop_log >= 100:
+            self._last_drop_log = self._drops
+            _LOG.warning(
+                "%s: consumer is falling behind, dropped %d media chunks so far",
+                self.host,
+                self._drops,
+            )
 
     async def _pong(self, msg_num):
         try:
@@ -481,7 +594,7 @@ class BaichuanClient(object):
 
         future = None
         if expect_reply:
-            future = asyncio.get_event_loop().create_future()
+            future = asyncio.get_running_loop().create_future()
             self._pending[(msg_id, msg_num)] = future
 
         try:
@@ -623,6 +736,7 @@ class BaichuanClient(object):
 
     async def stop_video(self, msg_num, stream=STREAM_MAIN, channel=0):
         self._video_queues.pop(msg_num, None)
+        self._media_remaining.pop(msg_num, None)
         _, handle, _ = _STREAMS[stream]
         body = PREVIEW_STOP_XML.format(channel=channel, handle=handle)
         try:

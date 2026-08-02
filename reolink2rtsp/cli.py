@@ -13,7 +13,7 @@ import time
 from . import __version__
 from .baichuan import BaichuanClient, STREAM_MAIN, STREAM_SUB, STREAM_EXTERN
 from .bcmedia import BcMediaParser, StreamInfo, VideoFrame
-from .config import ConfigError, load
+from .config import ConfigError, load, parse_users
 from .h26x import ParameterSets, split_nals
 from .rtsp import RtspServer
 from .source import CameraSource
@@ -77,7 +77,7 @@ async def _serve(config):
             sources[camera.name]._ensure_running()
 
     stop = asyncio.Event()
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     for signame in ("SIGINT", "SIGTERM"):
         sig = getattr(signal, signame, None)
         if sig is None:
@@ -189,6 +189,39 @@ async def _probe(host, username, password, port, stream, channel, seconds):
 # --------------------------------------------------------------------------- #
 
 
+def _apply_camera_flags(config, args):
+    """Apply the command-line shorthands that target every camera."""
+    only = set(args.only or ())
+    if only:
+        known = {camera.name for camera in config.cameras}
+        unknown = only - known
+        if unknown:
+            raise ConfigError(
+                "--only names no such camera: {} (known: {})".format(
+                    ", ".join(sorted(unknown)), ", ".join(sorted(known))
+                )
+            )
+
+    users = parse_users(args.users) if args.users else None
+
+    for camera in config.cameras:
+        if only:
+            camera.enabled = camera.name in only
+        if args.username:
+            camera.username = args.username
+        if args.password:
+            camera.password = args.password
+        if args.stream:
+            camera.stream = args.stream
+        if users:
+            camera.users = dict(users)
+        if args.always_on:
+            camera.always_on = True
+
+    if not any(camera.enabled for camera in config.cameras):
+        raise ConfigError("every camera is disabled - nothing to serve")
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="reolink2rtsp",
@@ -205,6 +238,39 @@ def build_parser():
     serve = sub.add_parser("serve", help="run the RTSP server (default)")
     serve.add_argument(
         "-c", "--config", default=DEFAULT_CONFIG, help="config file path"
+    )
+    serve.add_argument(
+        "-o", "--set", dest="overrides", action="append", metavar="SECTION.KEY=VALUE",
+        help="override any config value; repeatable. A bare KEY=VALUE targets "
+             "[server]. Sections are created on demand, so cameras can be "
+             "defined entirely from the command line, e.g. "
+             "-o camera:test.host=192.168.15.60 -o camera:test.rtsp_port=8554",
+    )
+    # Convenience shorthands for the [server] section.
+    serve.add_argument("--bind", help="address to listen on")
+    serve.add_argument("--base-port", type=int, help="first RTSP port to allocate")
+    serve.add_argument("--mtu", type=int, help="RTP payload MTU")
+    serve.add_argument(
+        "--describe-timeout", type=float,
+        help="seconds DESCRIBE waits for the first key frame",
+    )
+    # Convenience shorthands applied to every camera.
+    serve.add_argument("--username", help="camera username for all cameras")
+    serve.add_argument("--password", help="camera password for all cameras")
+    serve.add_argument(
+        "--stream", choices=[STREAM_MAIN, STREAM_SUB, STREAM_EXTERN],
+        help="stream to pull from all cameras",
+    )
+    serve.add_argument(
+        "--users", help="RTSP logins for all cameras, e.g. 'test:test, ops:pw'"
+    )
+    serve.add_argument(
+        "--only", metavar="NAME", action="append",
+        help="serve only these cameras; repeatable",
+    )
+    serve.add_argument(
+        "--always-on", action="store_true",
+        help="keep cameras connected even with no viewers",
     )
 
     probe = sub.add_parser(
@@ -247,15 +313,27 @@ def main(argv=None):
                 file=sys.stderr,
             )
             return 2
-        return asyncio.get_event_loop().run_until_complete(
+        return asyncio.run(
             _probe(
                 args.host, args.username, args.password, args.port,
                 args.stream, args.channel, args.seconds,
             )
         )
 
+    overrides = list(args.overrides or [])
+    for flag, key in (
+        ("bind", "bind"),
+        ("base_port", "base_port"),
+        ("mtu", "mtu"),
+        ("describe_timeout", "describe_timeout"),
+    ):
+        value = getattr(args, flag, None)
+        if value is not None:
+            overrides.append("server.{}={}".format(key, value))
+
     try:
-        config = load(args.config)
+        config = load(args.config, overrides)
+        _apply_camera_flags(config, args)
     except ConfigError as exc:
         _setup_logging(args.log_level or "INFO")
         _LOG.error("%s", exc)
@@ -263,7 +341,7 @@ def main(argv=None):
 
     _setup_logging(args.log_level or config.log_level)
     try:
-        return asyncio.get_event_loop().run_until_complete(_serve(config))
+        return asyncio.run(_serve(config))
     except KeyboardInterrupt:
         return 0
 

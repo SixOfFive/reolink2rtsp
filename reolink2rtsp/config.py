@@ -15,7 +15,8 @@ import os
 import re
 import shlex
 
-__all__ = ["Config", "CameraConfig", "load", "ConfigError"]
+__all__ = ["Config", "CameraConfig", "load", "apply_overrides",
+           "parse_users", "ConfigError"]
 
 _ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
@@ -48,7 +49,7 @@ def _expand(value):
     return _ENV_PATTERN.sub(replace, value)
 
 
-def _parse_users(raw):
+def parse_users(raw):
     """Parse ``user:pass, other:pass`` (or whitespace separated) into a dict."""
     users = {}
     if not raw:
@@ -150,15 +151,50 @@ def _getbool(section, key, default):
     return raw.strip().lower() in _TRUE
 
 
-def load(path):
-    """Load and validate a configuration file."""
-    if not os.path.exists(path):
-        raise ConfigError("config file not found: {}".format(path))
+def apply_overrides(parser, overrides):
+    """Apply ``SECTION.KEY=VALUE`` strings on top of a parsed config.
 
+    A bare ``KEY=VALUE`` targets ``[server]``. Sections are created on demand,
+    so a whole camera can be defined from the command line alone::
+
+        -o camera:test.host=192.168.15.60 -o camera:test.rtsp_port=8554
+    """
+    for item in overrides or ():
+        if "=" not in item:
+            raise ConfigError(
+                "override {!r} must be SECTION.KEY=VALUE".format(item)
+            )
+        target, value = item.split("=", 1)
+        target = target.strip()
+        if "." in target:
+            section, key = target.split(".", 1)
+        else:
+            section, key = "server", target
+        section, key = section.strip(), key.strip()
+        if not section or not key:
+            raise ConfigError("override {!r} must be SECTION.KEY=VALUE".format(item))
+        if not parser.has_section(section):
+            parser.add_section(section)
+        parser.set(section, key, value)
+
+
+def load(path, overrides=None):
+    """Load and validate a configuration file, applying any CLI overrides.
+
+    *path* may be None or missing when overrides alone define the cameras.
+    """
     parser = configparser.RawConfigParser()
     parser.optionxform = str  # keep key case as written
-    with open(path, "r", encoding="utf8") as handle:
-        parser.read_file(handle)
+
+    if path:
+        if not os.path.exists(path):
+            if not overrides:
+                raise ConfigError("config file not found: {}".format(path))
+        else:
+            with open(path, "r", encoding="utf8") as handle:
+                parser.read_file(handle)
+
+    apply_overrides(parser, overrides)
 
     server = parser["server"] if parser.has_section("server") else {}
     bind = _expand(server.get("bind", "0.0.0.0"))
@@ -169,7 +205,7 @@ def load(path):
     status_port = _getint(server, "status_port", 0)
 
     defaults = parser["defaults"] if parser.has_section("defaults") else {}
-    default_users = _parse_users(_expand(defaults.get("users", "")))
+    default_users = parse_users(_expand(defaults.get("users", "")))
 
     cameras = []
     used_ports = set()
@@ -198,7 +234,7 @@ def load(path):
             pass
         used_ports.add(rtsp_port)
 
-        users = _parse_users(_expand(section.get("users", ""))) or dict(default_users)
+        users = parse_users(_expand(section.get("users", ""))) or dict(default_users)
 
         stream = _expand(section.get("stream", "main")).lower()
         if stream not in ("main", "sub", "extern"):
