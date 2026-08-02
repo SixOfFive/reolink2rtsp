@@ -43,9 +43,21 @@ async def _serve(config):
     for port, cameras in sorted(config.by_port().items()):
         port_sources = {}
         for camera in cameras:
+            # The bare path serves the configured stream; each of the camera's
+            # other encodes gets its own sub-path. Sources are lazy, so the
+            # extra paths cost nothing until a client actually asks for one.
             source = CameraSource(camera)
             sources[camera.name] = source
             port_sources[camera.url_path] = source
+            port_sources["{}/{}".format(camera.url_path, camera.stream)] = source
+
+            for stream in camera.extra_streams:
+                key = "{}/{}".format(camera.url_path, stream)
+                if key in port_sources:
+                    continue
+                extra = CameraSource(camera.for_stream(stream))
+                sources[extra.name] = extra
+                port_sources[key] = extra
         users = cameras[0].users
         servers.append(
             RtspServer(

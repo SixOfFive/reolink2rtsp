@@ -49,6 +49,9 @@ _STATUS = {
 }
 
 
+# Control-URL suffixes clients append when addressing a single track.
+_CONTROL_PREFIXES = ("trackid=", "streamid=", "track=")
+
 # Matches key="value" or key=value inside an Authorization header.
 _DIGEST_FIELD = re.compile(r'(\w+)\s*=\s*(?:"([^"]*)"|([^,\s]+))')
 
@@ -364,11 +367,23 @@ class RtspConnection(object):
         )
 
     def _source_for(self, uri):
+        """Resolve a URL to a source.
+
+        Paths may name a specific stream (``/driveway/main``), and clients
+        append a control suffix during SETUP (``/driveway/main/trackID=1``),
+        so the suffix is stripped before lookup and the longest matching path
+        wins.
+        """
         path = urlparse(uri).path or "/"
-        name = unquote(path.strip("/").split("/")[0])
-        if not name:
+        segments = [unquote(s) for s in path.strip("/").split("/") if s]
+        # Clients append a per-track control suffix during SETUP and PLAY.
+        while segments and segments[-1].lower().startswith(_CONTROL_PREFIXES):
+            segments.pop()
+        if not segments:
             return None
-        return self.server.sources.get(name)
+        # Exact match only: falling back to a parent path would quietly serve
+        # the wrong stream for a typo like /driveway/mian.
+        return self.server.sources.get("/".join(segments))
 
     async def _do_describe(self, request):
         source = self._source_for(request.uri)
@@ -746,13 +761,16 @@ class RtspServer(object):
                 "with privileges, grant CAP_NET_BIND_SERVICE, or set base_port "
                 "to 8554 in the config)".format(self.port)
             )
-        for name, source in sorted(self.sources.items()):
+        host = self.bind if self.bind not in ("0.0.0.0", "::") else "<host>"
+        auth = ""
+        if self.users:
+            user = sorted(self.users)[0]
+            auth = "{}:{}@".format(user, self.users[user])
+        for path, source in sorted(self.sources.items()):
             _LOG.info(
-                "serving %s  ->  %s:%s (%s stream)%s",
-                source.config.describe(self.bind),
-                source.config.host,
-                source.config.port,
-                source.config.stream,
+                "serving rtsp://%s%s:%s/%s  ->  %s %s stream%s",
+                auth, host, self.port, path,
+                source.config.host, source.config.stream,
                 "" if self.users else "  [no auth]",
             )
 

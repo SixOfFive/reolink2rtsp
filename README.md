@@ -37,8 +37,6 @@ Developed and verified against five **Reolink Lumus** cameras on one LAN.
 | Open ports | **TCP 9000 only** — no 80, 443, 554, 1935 or 8000 |
 | PTZ | none |
 
-What those cameras actually stream:
-
 These cameras encode **three** video streams simultaneously, all H.264 High
 profile, plus one audio stream shared between them:
 
@@ -103,6 +101,27 @@ rtsp://test:test@<host>:8555/living_room
 rtsp://test:test@<host>:8556/work_area
 ```
 
+Each camera also publishes its other encodes on sub-paths, so a client picks
+resolution by URL:
+
+```
+rtsp://test:test@<host>:8554/driveway           640x360    (the configured default)
+rtsp://test:test@<host>:8554/driveway/sub       640x360
+rtsp://test:test@<host>:8554/driveway/extern    896x512
+rtsp://test:test@<host>:8554/driveway/main      2560x1440
+```
+
+RTSP has no way for a client to *request* a resolution — `DESCRIBE` publishes
+one media description and the client takes it or leaves it — so one path per
+stream is the standard idiom, and it is what Reolink's own RTSP cameras,
+Frigate and go2rtc all do.
+
+The bare path serves whatever `stream =` says, so **the default is low
+bandwidth and the expensive stream is opt-in**. Connections are on demand: the
+bridge only talks to the camera for streams something is actually watching, and
+disconnects again after `idle_timeout`. Unknown paths return 404 rather than
+quietly falling back to the parent.
+
 Verify with ffprobe:
 
 ```bash
@@ -128,7 +147,7 @@ users = test:test      ; applied to any camera that doesn't list its own
 host      = 192.168.15.60
 username  = admin
 password  = ${REOLINK_PASSWORD}   ; never a literal
-stream    = main                  ; main | sub | extern
+stream    = sub                   ; main | extern | sub - the default for /driveway
 rtsp_port = 8554
 users     = test:test, frigate:somethingelse
 ```
@@ -202,12 +221,18 @@ with the RTP clock stepping 1024 samples per frame.
 There is no transcoding, so **output bitrate is input bitrate** — nothing on the
 RTSP side can reduce it. Bandwidth is controlled at the camera, two ways.
 
-**1. Pick a different stream** (free, instant, no camera changes):
+**1. Pick a different stream** (free, instant, no camera changes) — either as
+the default in the config, or per client via the URL path:
 
 ```ini
-stream = sub        ; 640x360   ~0.3 Mbit/s
+stream = sub        ; 640x360   ~0.3 Mbit/s   <- what /driveway serves
 stream = extern     ; 896x512   ~1.2 Mbit/s
 stream = main       ; 2560x1440 ~3.2 Mbit/s
+```
+
+```ini
+extra_streams = main, extern, sub   ; published at /driveway/<stream> (default)
+extra_streams = none                ; publish only the configured stream
 ```
 
 **2. Retune the camera's encoder.** Inspect what a camera is doing:

@@ -59,6 +59,8 @@ users = test:test
 ; rtsp_port  - TCP port this camera is served on
 ; rtsp_path  - URL path; defaults to the section name
 ; users      - RTSP logins for this port (overrides [defaults])
+; extra_streams - also publish these at /<path>/<stream>; default main,extern,sub
+;                 set to "none" to publish only the configured stream
 ; always_on  - keep the camera connected even with no viewers
 ; audio      - serve the camera's AAC audio as a second RTSP track (default true)
 ; --------------------------------------------------------------------------
@@ -68,7 +70,7 @@ users = test:test
 host       = 192.168.15.60
 username   = admin
 password   = ${REOLINK_PASSWORD}
-stream     = main
+stream     = sub
 rtsp_port  = 8554
 users      = test:test
 
@@ -77,7 +79,7 @@ users      = test:test
 host       = 192.168.15.62
 username   = admin
 password   = ${REOLINK_PASSWORD}
-stream     = main
+stream     = sub
 rtsp_port  = 8555
 users      = test:test
 
@@ -86,7 +88,7 @@ users      = test:test
 host       = 192.168.15.64
 username   = admin
 password   = ${REOLINK_PASSWORD}
-stream     = main
+stream     = sub
 rtsp_port  = 8556
 users      = test:test
 
@@ -102,7 +104,7 @@ enabled    = false
 host       = 192.168.15.63
 username   = admin
 password   = ${REOLINK_PASSWORD}
-stream     = main
+stream     = sub
 rtsp_port  = 8557
 users      = test:test
 
@@ -113,6 +115,6 @@ enabled    = false
 host       = 192.168.15.61
 username   = admin
 password   = ${REOLINK_PASSWORD}
-stream     = main
+stream     = sub
 rtsp_port  = 8558
 users      = test:test

@@ -11,6 +11,7 @@ which keeps real camera passwords out of a file you might commit.
 from __future__ import annotations
 
 import configparser
+import copy
 import os
 import re
 import shlex
@@ -49,6 +50,24 @@ def _expand(value):
     return _ENV_PATTERN.sub(replace, value)
 
 
+def _parse_streams(raw):
+    """Parse a comma-separated stream list, or None to use the default set."""
+    if raw is None or not raw.strip():
+        return None
+    if raw.strip().lower() in ("none", "off", "false"):
+        return []
+    out = []
+    for item in re.split(r"[,\s]+", raw.strip()):
+        if not item:
+            continue
+        if item not in ("main", "sub", "extern"):
+            raise ConfigError(
+                "extra_streams entry {!r} must be main, sub or extern".format(item))
+        if item not in out:
+            out.append(item)
+    return out
+
+
 def parse_users(raw):
     """Parse ``user:pass, other:pass`` (or whitespace separated) into a dict."""
     users = {}
@@ -84,6 +103,10 @@ class CameraConfig(object):
         self.bitrate = kwargs.get("bitrate")
         self.framerate = kwargs.get("framerate")
         self.gop = kwargs.get("gop")
+        # Extra streams published at /<path>/<stream>.
+        self.extra_streams = kwargs.get("extra_streams")
+        if self.extra_streams is None:
+            self.extra_streams = ["main", "extern", "sub"]
 
         # RTSP endpoint
         self.rtsp_port = kwargs["rtsp_port"]
@@ -100,6 +123,20 @@ class CameraConfig(object):
     @property
     def url_path(self):
         return self.rtsp_path.strip("/")
+
+    def for_stream(self, stream):
+        """A copy of this camera pinned to a different stream.
+
+        Used to publish each of the camera's encodes on its own URL path.
+        """
+        clone = copy.copy(self)
+        clone.stream = stream
+        clone.name = "{}/{}".format(self.name, stream)
+        # Encoder overrides target the configured stream only; do not silently
+        # reconfigure the others when a client asks for them.
+        if stream != self.stream:
+            clone.bitrate = clone.framerate = clone.gop = None
+        return clone
 
     def describe(self, bind):
         host = bind if bind not in ("0.0.0.0", "::") else "<host>"
@@ -263,6 +300,8 @@ def load(path, overrides=None):
                 bitrate=_getint(section, "bitrate", None),
                 framerate=_getint(section, "framerate", None),
                 gop=_getint(section, "gop", None),
+                extra_streams=_parse_streams(
+                    _expand(section.get("extra_streams", ""))),
                 rtsp_port=rtsp_port,
                 rtsp_path=_expand(section.get("rtsp_path", "")) or name,
                 users=users,
