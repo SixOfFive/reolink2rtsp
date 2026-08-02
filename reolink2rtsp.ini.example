@@ -47,7 +47,15 @@ users = test:test
 ; host       - camera IP (Baichuan / TCP 9000)
 ; username   - camera login (Reolink default is 'admin')
 ; password   - camera password: use ${ENV_VAR}, never a literal here
-; stream     - main (clear/HD), sub (fluent/SD), or extern
+; stream     - which of the camera's three encodes to serve:
+;                main   2560x1440  ~3.2 Mbit/s
+;                extern  896x512   ~1.2 Mbit/s
+;                sub     640x360   ~0.3 Mbit/s
+;              All three are encoded by the camera anyway, so switching is free.
+;              Run `reolink2rtsp encoder <host>` to see a camera's actual values.
+; bitrate    - camera encoder bitrate in kbit/s (optional; persists on the camera)
+; framerate  - camera encoder frame rate (optional; persists on the camera)
+; gop        - camera key-frame interval (optional; persists on the camera)
 ; rtsp_port  - TCP port this camera is served on
 ; rtsp_path  - URL path; defaults to the section name
 ; users      - RTSP logins for this port (overrides [defaults])

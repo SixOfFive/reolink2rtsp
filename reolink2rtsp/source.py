@@ -199,6 +199,7 @@ class CameraSource(object):
             await client.login()
             self.connected = True
             self.started_at = time.time()
+            await self._apply_encoder_settings(client)
             stream_num, queue = await client.start_video(cfg.stream, cfg.channel)
 
             parser = BcMediaParser(on_desync=self._on_desync)
@@ -297,6 +298,26 @@ class CameraSource(object):
             ),
             "a=control:trackID=1",
         ]
+
+    async def _apply_encoder_settings(self, client):
+        """Push any configured bitrate/framerate/GOP to the camera.
+
+        These change what the camera encodes, which is the only way to alter
+        bandwidth without transcoding. A rejected value is logged and skipped
+        rather than taking the camera offline.
+        """
+        cfg = self.config
+        if cfg.bitrate is None and cfg.framerate is None and cfg.gop is None:
+            return
+        try:
+            changed = await client.set_enc(
+                cfg.channel, cfg.stream,
+                bitrate=cfg.bitrate, framerate=cfg.framerate, gop=cfg.gop,
+            )
+            if not changed:
+                _LOG.debug("%s: encoder already as configured", self.name)
+        except Exception as exc:
+            _LOG.warning("%s: could not apply encoder settings: %s", self.name, exc)
 
     def _on_desync(self, head):
         _LOG.debug("%s: bcmedia desync at %s", self.name, head.hex())

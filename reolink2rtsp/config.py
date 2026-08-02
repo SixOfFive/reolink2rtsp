@@ -80,6 +80,10 @@ class CameraConfig(object):
         self.stream = kwargs.get("stream", "main")
         self.enabled = kwargs.get("enabled", True)
         self.audio = kwargs.get("audio", True)
+        # Camera-side encoder settings. None means "leave alone".
+        self.bitrate = kwargs.get("bitrate")
+        self.framerate = kwargs.get("framerate")
+        self.gop = kwargs.get("gop")
 
         # RTSP endpoint
         self.rtsp_port = kwargs["rtsp_port"]
@@ -256,6 +260,9 @@ def load(path, overrides=None):
                 stream=stream,
                 enabled=_getbool(section, "enabled", True),
                 audio=_getbool(section, "audio", True),
+                bitrate=_getint(section, "bitrate", None),
+                framerate=_getint(section, "framerate", None),
+                gop=_getint(section, "gop", None),
                 rtsp_port=rtsp_port,
                 rtsp_path=_expand(section.get("rtsp_path", "")) or name,
                 users=users,

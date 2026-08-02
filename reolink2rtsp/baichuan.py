@@ -62,6 +62,8 @@ MSG_LOGOUT = 2
 MSG_VIDEO = 3
 MSG_VIDEO_STOP = 4
 MSG_PING = 93
+MSG_GET_ENC = 56
+MSG_SET_ENC = 57
 
 # Message classes. These are read/written as little-endian u16, so the constant
 # looks byte-swapped compared to the bytes on the wire: class bytes `14 64`
@@ -110,6 +112,12 @@ PREVIEW_XML = XML_DECL + (
     "<streamType>{stream_name}</streamType>\n"
     "</Preview>\n"
     "</body>\n"
+)
+
+CHANNEL_EXTENSION_XML = XML_DECL + (
+    "<Extension version=\"1.1\">\n"
+    "<channelId>{channel}</channelId>\n"
+    "</Extension>\n"
 )
 
 PREVIEW_STOP_XML = XML_DECL + (
@@ -563,24 +571,31 @@ class BaichuanClient(object):
         msg_class=CLASS_MODERN,
         legacy_tag=0x0000,
         expect_reply=True,
+        extension="",
     ):
-        """Send a command and await its reply."""
-        if isinstance(body, str):
-            raw = body.encode("utf8")
-        else:
-            raw = body
+        """Send a command and await its reply.
 
-        if raw:
+        *extension* is an optional XML preamble describing the body - some
+        commands (the per-channel getters and setters) will not answer without
+        it. Extension and body are encrypted separately, each starting from the
+        same IV, and ``payload_offset`` marks the split.
+        """
+        def _encrypt(text):
+            if not text:
+                return b""
+            raw = text.encode("utf8") if isinstance(text, str) else text
             if encrypt == "bc":
-                enc = bc_crypt(raw, channel_id)
-            elif encrypt == "aes":
+                return bc_crypt(raw, channel_id)
+            if encrypt == "aes":
                 if self._aes_key is None:
-                    raise BaichuanError("{}: AES requested before login".format(self.host))
-                enc = aes_cfb_encrypt(raw, self._aes_key)
-            else:
-                enc = raw
-        else:
-            enc = b""
+                    raise BaichuanError(
+                        "{}: AES requested before login".format(self.host)
+                    )
+                return aes_cfb_encrypt(raw, self._aes_key)
+            return raw
+
+        enc_ext = _encrypt(extension)
+        enc = enc_ext + _encrypt(body)
 
         data, msg_num = self._build(
             msg_id,
@@ -588,7 +603,7 @@ class BaichuanClient(object):
             channel_id=channel_id,
             stream_type=stream_type,
             msg_class=msg_class,
-            payload_offset=0,
+            payload_offset=len(enc_ext),
             legacy_tag=legacy_tag,
         )
 
@@ -734,6 +749,99 @@ class BaichuanClient(object):
         _LOG.info("%s: %s stream started (msg_num=%s)", self.host, stream_name, sent_num)
         return sent_num, queue
 
+    # ------------------------------------------------------------------ #
+    # Encoder settings
+    # ------------------------------------------------------------------ #
+
+    async def get_enc(self, channel=0):
+        """Read the encoder configuration for every stream on *channel*.
+
+        Returns ``(xml_text, {stream_name: {...}})`` where stream_name is one of
+        mainStream / subStream / thirdStream.
+        """
+        _, msg = await self.send(
+            MSG_GET_ENC,
+            "",
+            channel_id=channel,
+            extension=CHANNEL_EXTENSION_XML.format(channel=channel),
+        )
+        text = self._decrypt(msg)
+        return text, _parse_enc(text)
+
+    async def set_enc(self, channel=0, stream=STREAM_MAIN, bitrate=None,
+                      framerate=None, gop=None, profile=None):
+        """Change encoder settings for one stream.
+
+        Reads the current configuration, patches only the requested fields, and
+        writes the whole block back - the camera expects a complete Compression
+        document, not a delta.
+        """
+        xml_name = _STREAMS[stream][2] if stream in _STREAMS else stream
+        text, _ = await self.get_enc(channel)
+
+        root = ElementTree.fromstring(text)
+        node = root.find(".//{}".format(xml_name))
+        if node is None:
+            raise BaichuanError(
+                "{}: camera has no {} to configure".format(self.host, xml_name)
+            )
+
+        changes = {}
+        for key, value in (
+            ("bitRate", bitrate),
+            ("frame", framerate),
+            ("encoderProfile", profile),
+        ):
+            if value is None:
+                continue
+            field = node.find(key)
+            if field is None:
+                raise BaichuanError(
+                    "{}: {} has no {} setting".format(self.host, xml_name, key)
+                )
+            if field.text != str(value):
+                changes[key] = (field.text, str(value))
+                field.text = str(value)
+
+        if gop is not None:
+            field = node.find("gop/cur")
+            if field is not None and field.text != str(gop):
+                changes["gop"] = (field.text, str(gop))
+                field.text = str(gop)
+
+        if not changes:
+            return {}
+
+        body = XML_DECL + ElementTree.tostring(root, encoding="unicode")
+        try:
+            await self.send(
+                MSG_SET_ENC,
+                body,
+                channel_id=channel,
+                extension=CHANNEL_EXTENSION_XML.format(channel=channel),
+            )
+        except BaichuanError as err:
+            if "status 400" not in str(err):
+                raise
+            # The camera only accepts values from its own fixed tables, and
+            # says nothing about which - a rejected value is a 400.
+            raise BaichuanError(
+                "{}: camera rejected {} for {} ({}). These cameras only accept "
+                "certain values, and the allowed set depends on the stream's "
+                "resolution - try a nearby value.".format(
+                    self.host,
+                    ", ".join("{}={}".format(k, b) for k, (a, b) in sorted(changes.items())),
+                    xml_name,
+                    "status 400",
+                )
+            ) from err
+        _LOG.info(
+            "%s: %s encoder updated: %s",
+            self.host, xml_name,
+            ", ".join("{} {}->{}".format(k, a, b) for k, (a, b) in sorted(changes.items())),
+        )
+        return changes
+
     async def stop_video(self, msg_num, stream=STREAM_MAIN, channel=0):
         self._video_queues.pop(msg_num, None)
         self._media_remaining.pop(msg_num, None)
@@ -749,6 +857,41 @@ class BaichuanClient(object):
             )
         except Exception:
             pass
+
+
+def _parse_enc(text):
+    """Pull the per-stream encoder settings out of a GetEnc reply."""
+    streams = {}
+    try:
+        root = ElementTree.fromstring(text)
+    except ElementTree.ParseError:
+        return streams
+    compression = root.find(".//Compression")
+    if compression is None:
+        return streams
+    for node in compression:
+        if not node.tag.endswith("Stream"):
+            continue
+        entry = {}
+        for field in ("width", "height", "frame", "bitRate", "audio"):
+            value = node.find(field)
+            if value is not None and value.text:
+                try:
+                    entry[field] = int(value.text)
+                except ValueError:
+                    entry[field] = value.text
+        for field in ("resolutionName", "encoderType", "encoderProfile"):
+            value = node.find(field)
+            if value is not None and value.text:
+                entry[field] = value.text
+        gop = node.find("gop/cur")
+        if gop is not None and gop.text:
+            try:
+                entry["gop"] = int(gop.text)
+            except ValueError:
+                pass
+        streams[node.tag] = entry
+    return streams
 
 
 def _parse_device_info(text):

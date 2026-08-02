@@ -189,6 +189,60 @@ async def _probe(host, username, password, port, stream, channel, seconds):
 # --------------------------------------------------------------------------- #
 
 
+_STREAM_XML = {"main": "mainStream", "sub": "subStream", "extern": "thirdStream"}
+
+
+async def _encoder(host, username, password, port, channel,
+                   stream, bitrate, framerate, gop):
+    """Show, and optionally change, the camera's own encoder settings."""
+    client = BaichuanClient(host, username, password, port=port)
+    try:
+        await client.login()
+        _, enc = await client.get_enc(channel)
+        if not enc:
+            print("camera returned no encoder settings")
+            return 1
+
+        print("{}  channel {}\n".format(host, channel))
+        print("  {:<13} {:<12} {:>5} {:>9} {:>5}  {}".format(
+            "stream", "resolution", "fps", "kbit/s", "gop", "profile"))
+        for name in ("mainStream", "thirdStream", "subStream"):
+            settings = enc.get(name)
+            if not settings:
+                continue
+            print("  {:<13} {:<12} {:>5} {:>9} {:>5}  {}".format(
+                name,
+                "{}x{}".format(settings.get("width", "?"), settings.get("height", "?")),
+                settings.get("frame", "?"), settings.get("bitRate", "?"),
+                settings.get("gop", "-"), settings.get("encoderProfile", "?")))
+        print("\n  reolink2rtsp calls these main / extern / sub respectively")
+
+        if bitrate is None and framerate is None and gop is None:
+            return 0
+
+        print()
+        try:
+            changed = await client.set_enc(
+                channel, stream, bitrate=bitrate, framerate=framerate, gop=gop)
+        except Exception as exc:
+            print("failed: {}".format(exc))
+            return 1
+        if not changed:
+            print("already set as requested, nothing to do")
+            return 0
+        for key, (old, new) in sorted(changed.items()):
+            print("  {} {} -> {}".format(key, old, new))
+
+        _, after = await client.get_enc(channel)
+        settings = after.get(_STREAM_XML.get(stream, stream), {})
+        print("\nreadback: {}x{}  {} fps  {} kbit/s".format(
+            settings.get("width"), settings.get("height"),
+            settings.get("frame"), settings.get("bitRate")))
+        return 0
+    finally:
+        await client.close()
+
+
 def _apply_camera_flags(config, args):
     """Apply the command-line shorthands that target every camera."""
     only = set(args.only or ())
@@ -219,6 +273,12 @@ def _apply_camera_flags(config, args):
             camera.always_on = True
         if args.audio is not None:
             camera.audio = args.audio
+        if args.bitrate is not None:
+            camera.bitrate = args.bitrate
+        if args.framerate is not None:
+            camera.framerate = args.framerate
+        if args.gop is not None:
+            camera.gop = args.gop
 
     if not any(camera.enabled for camera in config.cameras):
         raise ConfigError("every camera is disabled - nothing to serve")
@@ -274,6 +334,11 @@ def build_parser():
         "--always-on", action="store_true",
         help="keep cameras connected even with no viewers",
     )
+    serve.add_argument("--bitrate", type=int,
+                       help="set the camera's encoder bitrate (kbps) for the served stream")
+    serve.add_argument("--framerate", type=int,
+                       help="set the camera's encoder frame rate for the served stream")
+    serve.add_argument("--gop", type=int, help="set the camera's key-frame interval")
     audio = serve.add_mutually_exclusive_group()
     audio.add_argument(
         "--audio", dest="audio", action="store_true", default=None,
@@ -302,19 +367,50 @@ def build_parser():
         "-t", "--seconds", type=float, default=8.0,
         help="how long to sample the stream",
     )
+
+    encoder = sub.add_parser(
+        "encoder",
+        help="show, or change, the camera's own encoder settings "
+             "(the only way to alter bandwidth without transcoding)",
+    )
+    encoder.add_argument("host")
+    encoder.add_argument("-u", "--username", default="admin")
+    encoder.add_argument(
+        "-p", "--password", default=os.environ.get("REOLINK_PASSWORD", ""))
+    encoder.add_argument("--port", type=int, default=9000)
+    encoder.add_argument("--channel", type=int, default=0)
+    encoder.add_argument(
+        "-s", "--stream", default=STREAM_MAIN,
+        choices=[STREAM_MAIN, STREAM_SUB, STREAM_EXTERN],
+        help="which stream to modify",
+    )
+    encoder.add_argument("--bitrate", type=int, help="kbit/s")
+    encoder.add_argument("--framerate", type=int, help="frames per second")
+    encoder.add_argument("--gop", type=int, help="key-frame interval")
     return parser
 
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     # Default to `serve` when no subcommand is given.
+    commands = ("serve", "probe", "encoder")
     if not argv or (argv[0].startswith("-") and argv[0] not in ("-h", "--help", "--version")):
-        if not any(a in ("serve", "probe") for a in argv):
+        if not any(a in commands for a in argv):
             argv.insert(0, "serve")
-    elif argv[0] not in ("serve", "probe", "-h", "--help", "--version"):
+    elif argv[0] not in commands + ("-h", "--help", "--version"):
         argv.insert(0, "serve")
 
     args = build_parser().parse_args(argv)
+
+    if args.command == "encoder":
+        _setup_logging(args.log_level or "WARNING")
+        if not args.password:
+            print("no password given: pass --password or set REOLINK_PASSWORD",
+                  file=sys.stderr)
+            return 2
+        return asyncio.run(_encoder(
+            args.host, args.username, args.password, args.port, args.channel,
+            args.stream, args.bitrate, args.framerate, args.gop))
 
     if args.command == "probe":
         _setup_logging(args.log_level or "INFO")

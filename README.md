@@ -39,13 +39,19 @@ Developed and verified against five **Reolink Lumus** cameras on one LAN.
 
 What those cameras actually stream:
 
-| Stream | Codec | Resolution | Rate | Bitrate |
-|---|---|---|---|---|
-| `main` | H.264 High (`profile-level-id=640033`) | 2560×1440 | ~15 fps | ~3.2 Mbit/s |
-| `sub` | H.264 | 640×360 | ~10 fps | ~0.3 Mbit/s |
-| audio | AAC-LC, ADTS framed | mono | 16 kHz | ~50 kbit/s |
+These cameras encode **three** video streams simultaneously, all H.264 High
+profile, plus one audio stream shared between them:
 
-`extern` is accepted by the config but this model does not provide it.
+| Stream | Camera name | Resolution | Rate | Bitrate |
+|---|---|---|---|---|
+| `main` | `mainStream` | 2560×1440 | 15 fps | 3072 kbit/s |
+| `extern` | `thirdStream` | **896×512** | 15 fps | 1228 kbit/s |
+| `sub` | `subStream` | 640×360 | 10 fps | 256 kbit/s |
+| audio | — | AAC-LC, mono | 16 kHz | ~50 kbit/s |
+
+Pick one with `stream = main | extern | sub`. Since there is no transcoding,
+choosing the stream *is* the primary bandwidth control, and it costs nothing —
+the camera is already encoding all three.
 
 Nothing above is hardcoded — resolution, frame rate and audio format are all
 discovered at runtime from the stream itself (the `1001`/`1002` info block, the
@@ -191,6 +197,59 @@ a=control:trackID=1
 Packetisation follows RFC 3640 (`mode=AAC-hbr`), one access unit per packet,
 with the RTP clock stepping 1024 samples per frame.
 
+## Bandwidth and encoder settings
+
+There is no transcoding, so **output bitrate is input bitrate** — nothing on the
+RTSP side can reduce it. Bandwidth is controlled at the camera, two ways.
+
+**1. Pick a different stream** (free, instant, no camera changes):
+
+```ini
+stream = sub        ; 640x360   ~0.3 Mbit/s
+stream = extern     ; 896x512   ~1.2 Mbit/s
+stream = main       ; 2560x1440 ~3.2 Mbit/s
+```
+
+**2. Retune the camera's encoder.** Inspect what a camera is doing:
+
+```bash
+python -m reolink2rtsp encoder 192.168.15.60
+```
+
+```
+  stream        resolution     fps    kbit/s   gop  profile
+  mainStream    2560x1440       15      3072     2  high
+  thirdStream   896x512         15      1228     -  high
+  subStream     640x360         10       256     4  high
+```
+
+Change it, with a readback to confirm:
+
+```bash
+python -m reolink2rtsp encoder 192.168.15.60 -s sub --bitrate 512 --framerate 15
+```
+
+Or set it in the config, and it is applied automatically on every connect:
+
+```ini
+[camera:driveway]
+stream    = sub
+bitrate   = 512     ; kbit/s
+framerate = 10
+gop       = 4       ; key-frame interval
+```
+
+These are **persistent camera settings** — they affect Home Assistant, the
+Reolink app and anything else using that stream, not just reolink2rtsp.
+
+Resolution itself is not settable per stream; the three are fixed by the model.
+
+The camera validates values against internal tables that depend on the stream's
+resolution, and rejects anything outside them with a bare `400`. reolink2rtsp
+turns that into a readable error and carries on with the existing settings
+rather than failing to start. If a value is refused, try a nearby one — 512
+kbit/s is accepted for the 640×360 substream, 1024 is not.
+
 ## How it works
 
 ```
@@ -251,8 +310,10 @@ Resolution, frame rate, codec and audio format are all discovered at runtime, so
 a different Baichuan camera should serve correctly without code changes. Known
 limits:
 
-* **`externStream` is not universal.** B800-class cameras have it; the Lumus
-  does not. Selecting it where it is absent fails rather than falling back.
+* **`extern` is not universal.** The Lumus E430 does provide it (896×512), but
+  some models do not. Run `reolink2rtsp encoder <host>` to see what a given
+  camera actually offers; selecting an absent stream fails rather than falling
+  back.
 * **Multi-channel devices** (NVRs, dual-lens) need channel handling beyond
   channel 0.
 * **H.265 is implemented but untested on real hardware** — the packetiser and
