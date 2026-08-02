@@ -1,0 +1,104 @@
+; reolink2rtsp configuration
+;
+; Copy to reolink2rtsp.ini and fill in the camera passwords. The real file is
+; gitignored; this example is safe to publish because it contains no camera
+; credentials - only the RTSP-side test/test logins.
+;
+; Camera passwords must NOT be written here. Use ${ENV_VAR} and export the
+; value, or put it in a separate file that is never committed:
+;
+;     export REOLINK_PASSWORD='your-camera-password'
+;
+; Any value supports ${VAR} and ${VAR:-fallback}.
+
+[server]
+; Address to listen on. 0.0.0.0 = every interface.
+bind = 0.0.0.0
+
+; Cameras that do not set rtsp_port explicitly get one from here, incrementing.
+; NOTE: on Linux/macOS, ports below 1024 require root or
+;   setcap 'cap_net_bind_service=+ep' $(readlink -f $(which python3))
+; If you would rather not do that, set base_port = 8554.
+base_port = 554
+
+; RTP packet size. Lower it if you see loss over Wi-Fi or a VPN.
+mtu = 1400
+
+; How long DESCRIBE waits for the first key frame before returning 503.
+describe_timeout = 20
+
+log_level = INFO
+
+
+[defaults]
+; RTSP logins applied to any camera that does not list its own.
+; Format: user:pass, separated by commas or newlines. Multiple pairs allowed.
+users = test:test
+
+
+; --------------------------------------------------------------------------
+; Cameras
+;
+; host       - camera IP (Baichuan / TCP 9000)
+; username   - camera login (Reolink default is 'admin')
+; password   - camera password: use ${ENV_VAR}, never a literal here
+; stream     - main (clear/HD), sub (fluent/SD), or extern
+; rtsp_port  - TCP port this camera is served on
+; rtsp_path  - URL path; defaults to the section name
+; users      - RTSP logins for this port (overrides [defaults])
+; always_on  - keep the camera connected even with no viewers
+; --------------------------------------------------------------------------
+
+; Home Assistant device "Driveway"  (HA entities are named porch_*)
+[camera:driveway]
+host       = 192.168.15.60
+username   = admin
+password   = ${REOLINK_DRIVEWAY_PASSWORD:-${REOLINK_PASSWORD}}
+stream     = main
+rtsp_port  = 554
+users      = test:test
+
+; Home Assistant device "Living Room"  (HA entities are named front_*)
+[camera:living_room]
+host       = 192.168.15.62
+username   = admin
+password   = ${REOLINK_LIVING_ROOM_PASSWORD:-${REOLINK_PASSWORD}}
+stream     = main
+rtsp_port  = 555
+users      = test:test
+
+; Home Assistant device "Work Area"  (HA entities are named driveway_*)
+[camera:work_area]
+host       = 192.168.15.64
+username   = admin
+password   = ${REOLINK_WORK_AREA_PASSWORD:-${REOLINK_PASSWORD}}
+stream     = main
+rtsp_port  = 556
+users      = test:test
+
+
+; --------------------------------------------------------------------------
+; Currently offline - left here so they start working the moment they come back.
+; Set enabled = true once the camera is reachable.
+; --------------------------------------------------------------------------
+
+; Home Assistant device "Back Yard"  (HA entities are named garage_*)
+[camera:back_yard]
+enabled    = false
+host       = 192.168.15.63
+username   = admin
+password   = ${REOLINK_BACK_YARD_PASSWORD:-${REOLINK_PASSWORD}}
+stream     = main
+rtsp_port  = 557
+users      = test:test
+
+; Home Assistant device "Garage"  (HA entities are named back_door_*)
+; MAC 8c:bd:37:35:b2:aa - it did not answer on the LAN, so set the IP when known.
+[camera:garage]
+enabled    = false
+host       = 192.168.15.61
+username   = admin
+password   = ${REOLINK_GARAGE_PASSWORD:-${REOLINK_PASSWORD}}
+stream     = main
+rtsp_port  = 558
+users      = test:test

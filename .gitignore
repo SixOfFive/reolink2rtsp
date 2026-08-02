@@ -6,6 +6,9 @@ CLAUDE.local.md
 .cursor/
 
 # --- Secrets & local config ---
+# The live config holds camera credentials. Only the .example is committed.
+reolink2rtsp.ini
+*.local.ini
 .env
 .env.*
 !.env.example

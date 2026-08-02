@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reolink2rtsp"
+version = "0.1.0"
+description = "RTSP bridge for Reolink cameras that only speak the proprietary Baichuan protocol on TCP 9000"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+keywords = ["reolink", "baichuan", "rtsp", "frigate", "camera", "onvif", "lumus"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Home Automation",
+]
+
+# No mandatory dependencies: protocol, AES, RTP and RTSP are all stdlib.
+dependencies = []
+
+[project.optional-dependencies]
+# Optional AES acceleration. Either one is picked up automatically.
+fast = ["cryptography>=3.0"]
+
+[project.scripts]
+reolink2rtsp = "reolink2rtsp.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/SixOfFive/reolink2rtsp"
+Source = "https://github.com/SixOfFive/reolink2rtsp"
+
+[tool.setuptools]
+packages = ["reolink2rtsp"]
