@@ -217,6 +217,8 @@ def _apply_camera_flags(config, args):
             camera.users = dict(users)
         if args.always_on:
             camera.always_on = True
+        if args.audio is not None:
+            camera.audio = args.audio
 
     if not any(camera.enabled for camera in config.cameras):
         raise ConfigError("every camera is disabled - nothing to serve")
@@ -271,6 +273,15 @@ def build_parser():
     serve.add_argument(
         "--always-on", action="store_true",
         help="keep cameras connected even with no viewers",
+    )
+    audio = serve.add_mutually_exclusive_group()
+    audio.add_argument(
+        "--audio", dest="audio", action="store_true", default=None,
+        help="serve the camera's AAC audio as a second RTSP track (default)",
+    )
+    audio.add_argument(
+        "--no-audio", dest="audio", action="store_false",
+        help="video only",
     )
 
     probe = sub.add_parser(

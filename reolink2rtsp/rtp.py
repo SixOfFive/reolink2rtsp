@@ -139,6 +139,33 @@ class RtpPacketizer(object):
 
     # ------------------------------------------------------------------ #
 
+    # ------------------------------------------------------------------ #
+
+    def packetize_aac(self, frames, timestamp):
+        """Packetise AAC access units per RFC 3640 (mode=AAC-hbr).
+
+        Each packet carries a 2-byte AU-headers-length field followed by one
+        16-bit AU header holding the access unit size (13 bits) and index
+        (3 bits). At 16 kHz mono an access unit is a few hundred bytes, so
+        fragmentation is a defensive path rather than the norm.
+        """
+        packets = []
+        limit = self._max_payload() - 4  # AU-headers-length + one AU header
+        for unit in frames:
+            if not unit:
+                continue
+            au_headers = struct.pack("!HH", 16, (len(unit) << 3) & 0xFFFF)
+            if len(unit) <= limit:
+                packets.append(self._emit(au_headers + unit, True, timestamp))
+                continue
+            offset = 0
+            while offset < len(unit):
+                chunk = unit[offset : offset + limit]
+                offset += len(chunk)
+                last = offset >= len(unit)
+                packets.append(self._emit(au_headers + chunk, last, timestamp))
+        return packets
+
     def sender_report(self, ntp_seconds, ntp_fraction, timestamp):
         """Build an RTCP sender report so clients can keep their clocks sane."""
         return struct.pack(

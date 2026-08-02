@@ -22,7 +22,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from reolink2rtsp.config import CameraConfig  # noqa: E402
 from reolink2rtsp.h26x import H264, ParameterSets  # noqa: E402
 from reolink2rtsp.rtsp import RtspServer  # noqa: E402
-from reolink2rtsp.source import AccessUnit, Subscriber  # noqa: E402
+from reolink2rtsp.aac import audio_specific_config, parse_adts  # noqa: E402
+from reolink2rtsp.source import AccessUnit, AudioUnit, Subscriber  # noqa: E402
 
 HOST = "127.0.0.1"
 PORT = 18554
@@ -41,6 +42,20 @@ def make_pframe(index):
     return bytes([0x41]) + bytes([index & 0xFF]) * 200
 
 
+def make_adts(payload_len=200, index=0):
+    """A synthetic ADTS frame: AAC-LC, 16 kHz, mono."""
+    total = 7 + payload_len
+    header = bytearray(7)
+    header[0] = 0xFF
+    header[1] = 0xF9                      # MPEG-4, layer 0, no CRC
+    header[2] = (1 << 6) | (8 << 2) | 0   # AAC-LC, 16000 Hz, ch high bit 0
+    header[3] = (1 << 6) | ((total >> 11) & 0x03)
+    header[4] = (total >> 3) & 0xFF
+    header[5] = ((total & 0x07) << 5) | 0x1F
+    header[6] = 0xFC
+    return bytes(header) + bytes([index & 0xFF]) * payload_len
+
+
 class FakeSource(object):
     """Implements the interface RtspServer expects from CameraSource."""
 
@@ -56,6 +71,26 @@ class FakeSource(object):
         self.last_error = None
         self.subscribers = []
         self.sent = []
+        self.audio_enabled = True
+        self.audio_info = parse_adts(make_adts())
+
+    @property
+    def audio_ready(self):
+        return self.audio_enabled and self.audio_info is not None
+
+    def audio_sdp(self, payload_type):
+        if not self.audio_ready:
+            return None
+        info = self.audio_info
+        return [
+            "m=audio 0 RTP/AVP {}".format(payload_type),
+            "a=rtpmap:{} mpeg4-generic/{}/{}".format(
+                payload_type, info.sample_rate, max(1, info.channels)),
+            "a=fmtp:{} streamtype=5; profile-level-id=1; mode=AAC-hbr; "
+            "sizelength=13; indexlength=3; indexdeltalength=3; config={}".format(
+                payload_type, audio_specific_config(info)),
+            "a=control:trackID=1",
+        ]
 
     async def wait_ready(self, timeout):
         return True
@@ -89,6 +124,10 @@ class FakeSource(object):
             self.sent.append(nals)
             for sub in list(self.subscribers):
                 sub.offer(unit)
+            # One AAC access unit between pictures.
+            audio = AudioUnit([make_adts(120, index)[7:]], index * 1024, 0)
+            for sub in list(self.subscribers):
+                sub.offer(audio)
             timestamp += 3000
 
 
@@ -196,15 +235,27 @@ class RtspClient(object):
             body = await self.reader.readexactly(length)
         return status, headers, body
 
-    async def read_interleaved(self, count, timeout=10.0):
-        """Collect *count* interleaved RTP packets."""
+    async def read_channels(self, count, timeout=10.0):
+        """Read *count* interleaved frames and group them by channel."""
+        out = {}
+        for _ in range(count):
+            head = await asyncio.wait_for(self.reader.readexactly(4), timeout)
+            assert head[0:1] == b"$", "expected interleaved frame, got {!r}".format(head)
+            length = struct.unpack("!H", head[2:4])[0]
+            body = await asyncio.wait_for(self.reader.readexactly(length), timeout)
+            out.setdefault(head[1], []).append(body)
+        return out
+
+    async def read_interleaved(self, count, timeout=10.0, channel=None):
+        """Collect *count* interleaved RTP packets, optionally from one channel."""
         packets = []
         while len(packets) < count:
             head = await asyncio.wait_for(self.reader.readexactly(4), timeout)
             assert head[0:1] == b"$", "expected interleaved frame, got {!r}".format(head)
             length = struct.unpack("!H", head[2:4])[0]
-            packets.append(await asyncio.wait_for(
-                self.reader.readexactly(length), timeout))
+            body = await asyncio.wait_for(self.reader.readexactly(length), timeout)
+            if channel is None or head[1] == channel:
+                packets.append(body)
         return packets
 
 
@@ -284,7 +335,11 @@ async def run():
         assert "profile-level-id=42001f" in sdp, sdp
         assert base64.b64encode(SPS).decode() in sdp, "SPS missing from SDP"
         assert base64.b64encode(PPS).decode() in sdp, "PPS missing from SDP"
-        print("  DESCRIBE returned a well-formed SDP with parameter sets")
+        assert "m=audio 0 RTP/AVP 97" in sdp, sdp
+        assert "a=rtpmap:97 mpeg4-generic/16000/1" in sdp, sdp
+        assert "mode=AAC-hbr" in sdp and "config=1408" in sdp, sdp
+        assert "a=control:trackID=1" in sdp, sdp
+        print("  DESCRIBE returned a well-formed SDP with video + AAC audio tracks")
 
         status, headers, _ = await client.request(
             "SETUP", {"Transport": "RTP/AVP/TCP;unicast;interleaved=0-1"}
@@ -294,14 +349,29 @@ async def run():
         client.session = headers["session"].split(";")[0]
         print("  SETUP negotiated TCP-interleaved transport")
 
-        status, _, _ = await client.request("PLAY")
+        base_url = client.url
+        client.url = base_url + "/trackID=1"
+        status, headers, _ = await client.request(
+            "SETUP", {"Transport": "RTP/AVP/TCP;unicast;interleaved=2-3"}
+        )
+        client.url = base_url
+        assert status == 200, "audio SETUP failed: {}".format(status)
+        assert "interleaved=2-3" in headers.get("transport", "")
+        print("  SETUP added the audio track on interleaved channels 2-3")
+
+        status, headers, _ = await client.request("PLAY")
         assert status == 200, "PLAY failed: {}".format(status)
-        print("  PLAY accepted")
+        assert "trackID=0" in headers.get("rtp-info", "")
+        assert "trackID=1" in headers.get("rtp-info", "")
+        print("  PLAY accepted, RTP-Info lists both tracks")
 
         await asyncio.sleep(0.1)
         source.emit(8)
 
-        packets = await client.read_interleaved(20)
+        by_channel = await client.read_channels(30, timeout=10)
+        packets = by_channel.get(0, [])
+        assert packets, "no video packets arrived on channel 0"
+        assert by_channel.get(2), "no audio packets arrived on channel 2"
         nals = depacketize(packets)
 
         assert nals[0] == SPS, "first NAL should be the SPS"
@@ -321,6 +391,25 @@ async def run():
         assert all((p[1] & 0x7F) == 96 for p in packets)
         assert len({p[8:12] for p in packets}) == 1, "SSRC must not change"
         print("  RTP sequence numbers contiguous, PT=96, SSRC stable")
+
+        audio_packets = by_channel[2]
+        for packet in audio_packets:
+            assert (packet[1] & 0x7F) == 97, "audio must use payload type 97"
+            payload = packet[12:]
+            headers_len = struct.unpack("!H", payload[0:2])[0]
+            assert headers_len == 16, "one 16-bit AU header expected"
+            au_size = struct.unpack("!H", payload[2:4])[0] >> 3
+            assert au_size == len(payload) - 4, (
+                "AU header size {} disagrees with payload {}".format(
+                    au_size, len(payload) - 4))
+        stamps = [struct.unpack("!I", p[4:8])[0] for p in audio_packets]
+        deltas = {b - a for a, b in zip(stamps, stamps[1:])}
+        assert deltas == {1024}, (
+            "AAC timestamps must advance 1024 samples per frame, got {}".format(deltas))
+        assert len({p[8:12] for p in audio_packets}) == 1, "audio SSRC must be stable"
+        assert {p[8:12] for p in audio_packets} != {packets[0][8:12]}, (
+            "audio and video must not share an SSRC")
+        print("  audio track carries valid RFC 3640 AAC, 1024-sample steps")
 
         status, _, _ = await client.request("TEARDOWN")
         assert status == 200

@@ -52,6 +52,7 @@ users = test:test
 ; rtsp_path  - URL path; defaults to the section name
 ; users      - RTSP logins for this port (overrides [defaults])
 ; always_on  - keep the camera connected even with no viewers
+; audio      - serve the camera's AAC audio as a second RTSP track (default true)
 ; --------------------------------------------------------------------------
 
 ; Home Assistant device "Driveway"  (HA entities are named porch_*)

@@ -79,6 +79,7 @@ class CameraConfig(object):
         self.channel = kwargs.get("channel", 0)
         self.stream = kwargs.get("stream", "main")
         self.enabled = kwargs.get("enabled", True)
+        self.audio = kwargs.get("audio", True)
 
         # RTSP endpoint
         self.rtsp_port = kwargs["rtsp_port"]
@@ -254,6 +255,7 @@ def load(path, overrides=None):
                 channel=_getint(section, "channel", 0),
                 stream=stream,
                 enabled=_getbool(section, "enabled", True),
+                audio=_getbool(section, "audio", True),
                 rtsp_port=rtsp_port,
                 rtsp_path=_expand(section.get("rtsp_path", "")) or name,
                 users=users,

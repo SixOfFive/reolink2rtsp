@@ -11,8 +11,9 @@ import asyncio
 import logging
 import time
 
+from .aac import SAMPLES_PER_FRAME, audio_specific_config, parse_adts, strip_adts
 from .baichuan import BaichuanClient, BaichuanError, LoginFailed
-from .bcmedia import BcMediaParser, StreamInfo, VideoFrame
+from .bcmedia import AudioFrame, BcMediaParser, StreamInfo, VideoFrame
 from .h26x import H264, H265, ParameterSets, split_nals, nal_type
 from .h26x import H264_NAL_AUD, H264_NAL_PPS, H264_NAL_SPS
 from .h26x import H265_NAL_AUD, H265_NAL_PPS, H265_NAL_SPS, H265_NAL_VPS
@@ -26,12 +27,28 @@ MAX_SANE_GAP_US = 10_000_000  # 10s; anything larger means the camera clock jump
 class AccessUnit(object):
     """One decodable picture, as a list of NAL units."""
 
+    kind = "video"
+
     __slots__ = ("nals", "keyframe", "timestamp", "wallclock")
 
     def __init__(self, nals, keyframe, timestamp, wallclock):
         self.nals = nals
         self.keyframe = keyframe
         self.timestamp = timestamp  # 90 kHz RTP timestamp
+        self.wallclock = wallclock
+
+
+class AudioUnit(object):
+    """One AAC access unit, ADTS header already stripped."""
+
+    kind = "audio"
+    keyframe = False
+
+    __slots__ = ("frames", "timestamp", "wallclock")
+
+    def __init__(self, frames, timestamp, wallclock):
+        self.frames = frames
+        self.timestamp = timestamp  # RTP timestamp at the audio sample rate
         self.wallclock = wallclock
 
 
@@ -45,7 +62,8 @@ class Subscriber(object):
 
     def offer(self, unit):
         # Wait for a keyframe before sending anything, or the client sees
-        # garbage until the next IDR.
+        # garbage until the next IDR. Audio waits too, so the tracks start
+        # together.
         if not self.started:
             if not unit.keyframe:
                 return
@@ -70,6 +88,12 @@ class CameraSource(object):
         self.codec = None
         self.params = None
         self.info = None
+
+        # Audio, discovered from the stream's ADTS headers.
+        self.audio_info = None
+        self.audio_enabled = getattr(config, "audio", True)
+        self._audio_timestamp = 0
+        self.audio_frames_seen = 0
 
         self._subscribers = set()
         self._task = None
@@ -200,6 +224,8 @@ class CameraSource(object):
                         _LOG.info("%s: %r", self.name, frame)
                     elif isinstance(frame, VideoFrame):
                         self._on_video(frame)
+                    elif isinstance(frame, AudioFrame):
+                        self._on_audio(frame)
 
                 # Drop the camera connection when nobody is watching.
                 if not self._subscribers and not cfg.always_on:
@@ -223,6 +249,54 @@ class CameraSource(object):
                     pass
             await client.close()
             self._client = None
+
+    def _on_audio(self, frame):
+        """Forward an AAC frame, learning the stream format from its ADTS header."""
+        if not self.audio_enabled or frame.codec != "AAC":
+            return
+        info = parse_adts(frame.data)
+        if info is None:
+            return
+        if self.audio_info is None:
+            self.audio_info = info
+            _LOG.info(
+                "%s: audio is AAC-LC %d Hz, %d channel(s)",
+                self.name, info.sample_rate, info.channels,
+            )
+        payload = strip_adts(frame.data, info)
+        if not payload:
+            return
+
+        self.audio_frames_seen += 1
+        unit = AudioUnit([payload], self._audio_timestamp, time.time())
+        # One AAC-LC access unit is 1024 samples, so the clock advances by a
+        # fixed step rather than needing a timestamp from the camera.
+        self._audio_timestamp = (
+            self._audio_timestamp + SAMPLES_PER_FRAME
+        ) & 0xFFFFFFFF
+        for sub in list(self._subscribers):
+            sub.offer(unit)
+
+    @property
+    def audio_ready(self):
+        return self.audio_enabled and self.audio_info is not None
+
+    def audio_sdp(self, payload_type):
+        """SDP lines for the audio track, or None when there is no audio."""
+        if not self.audio_ready:
+            return None
+        info = self.audio_info
+        return [
+            "m=audio 0 RTP/AVP {}".format(payload_type),
+            "a=rtpmap:{} mpeg4-generic/{}/{}".format(
+                payload_type, info.sample_rate, max(1, info.channels)
+            ),
+            "a=fmtp:{} streamtype=5; profile-level-id=1; mode=AAC-hbr; "
+            "sizelength=13; indexlength=3; indexdeltalength=3; config={}".format(
+                payload_type, audio_specific_config(info)
+            ),
+            "a=control:trackID=1",
+        ]
 
     def _on_desync(self, head):
         _LOG.debug("%s: bcmedia desync at %s", self.name, head.hex())
@@ -313,5 +387,9 @@ class CameraSource(object):
                 "{}x{}".format(self.info.width, self.info.height) if self.info else None
             ),
             "fps": self.info.fps if self.info else None,
+            "audio": (
+                "AAC {}Hz".format(self.audio_info.sample_rate)
+                if self.audio_info else None
+            ),
             "error": self.last_error,
         }

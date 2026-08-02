@@ -29,7 +29,10 @@ _LOG = logging.getLogger(__name__)
 
 SERVER_NAME = "reolink2rtsp"
 RTSP_VERSION = "RTSP/1.0"
-PAYLOAD_TYPE = 96
+PAYLOAD_TYPE = 96  # video, trackID=0
+AUDIO_PAYLOAD_TYPE = 97  # AAC, trackID=1
+VIDEO_TRACK = 0
+AUDIO_TRACK = 1
 SESSION_TIMEOUT = 60
 
 _STATUS = {
@@ -79,23 +82,13 @@ class Request(object):
         return self.header("cseq", "0")
 
 
-class RtspSession(object):
-    """One SETUP/PLAY session: a subscriber plus its transport."""
+class Track(object):
+    """One media track (video or audio) and the transport carrying it."""
 
-    _counter = 0
-
-    def __init__(self, source, connection):
-        RtspSession._counter += 1
-        self.id = "{:08X}".format(
-            (int(time.time()) ^ (RtspSession._counter << 16) ^ os.getpid()) & 0xFFFFFFFF
-        )
-        self.source = source
-        self.connection = connection
-        self.subscriber = None
+    def __init__(self, track_id, kind):
+        self.id = track_id
+        self.kind = kind  # "video" or "audio"
         self.packetizer = None
-        self.task = None
-        self.playing = False
-        self.last_activity = time.monotonic()
 
         # TCP interleaved
         self.interleaved = None  # (rtp_channel, rtcp_channel)
@@ -108,8 +101,46 @@ class RtspSession(object):
         self.server_rtp_port = None
         self.server_rtcp_port = None
 
-    def transport_is_tcp(self):
+    @property
+    def is_tcp(self):
         return self.interleaved is not None
+
+    def close(self):
+        for sock in (self.udp_socket, self.udp_rtcp_socket):
+            if sock is not None:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+        self.udp_socket = self.udp_rtcp_socket = None
+
+
+class RtspSession(object):
+    """One RTSP session. Clients SETUP each track separately, then PLAY once."""
+
+    _counter = 0
+
+    def __init__(self, source, connection):
+        RtspSession._counter += 1
+        self.id = "{:08X}".format(
+            (int(time.time()) ^ (RtspSession._counter << 16) ^ os.getpid()) & 0xFFFFFFFF
+        )
+        self.source = source
+        self.connection = connection
+        self.subscriber = None
+        self.tracks = {}  # track_id -> Track
+        self.task = None
+        self.playing = False
+        self.last_activity = time.monotonic()
+
+    def track_for(self, kind):
+        for track in self.tracks.values():
+            if track.kind == kind:
+                return track
+        return None
+
+    def transport_is_tcp(self):
+        return any(t.is_tcp for t in self.tracks.values())
 
     async def close(self):
         self.playing = False
@@ -123,13 +154,9 @@ class RtspSession(object):
         if self.subscriber is not None:
             self.source.unsubscribe(self.subscriber)
             self.subscriber = None
-        for sock in (self.udp_socket, self.udp_rtcp_socket):
-            if sock is not None:
-                try:
-                    sock.close()
-                except Exception:
-                    pass
-        self.udp_socket = self.udp_rtcp_socket = None
+        for track in self.tracks.values():
+            track.close()
+        self.tracks.clear()
 
 
 class RtspConnection(object):
@@ -387,9 +414,24 @@ class RtspConnection(object):
             "a=control:trackID=0",
             "a=recvonly",
         ]
+        audio = source.audio_sdp(AUDIO_PAYLOAD_TYPE)
+        if audio:
+            lines.extend(audio)
+            lines.append("a=recvonly")
         return "\r\n".join(lines) + "\r\n"
 
     # ------------------------------------------------------------------ #
+
+    def _track_id_from(self, uri):
+        """Extract trackID=N from a SETUP URL. Defaults to the video track."""
+        path = urlparse(uri).path or ""
+        for segment in reversed(path.strip("/").split("/")):
+            if segment.lower().startswith("trackid="):
+                try:
+                    return int(segment.split("=", 1)[1])
+                except ValueError:
+                    return VIDEO_TRACK
+        return VIDEO_TRACK
 
     async def _do_setup(self, request):
         source = self._source_for(request.uri)
@@ -397,12 +439,31 @@ class RtspConnection(object):
             await self._respond(request, 404)
             return
 
-        transport = request.header("transport", "")
-        session = RtspSession(source, self)
+        track_id = self._track_id_from(request.uri)
+        if track_id == AUDIO_TRACK and not source.audio_ready:
+            await self._respond(request, 404)
+            return
+        if track_id not in (VIDEO_TRACK, AUDIO_TRACK):
+            await self._respond(request, 404)
+            return
 
+        # A second SETUP carrying our Session header joins the existing session
+        # rather than starting a new one - that is how a client adds a track.
+        session = self._session_for(request)
+        if session is None:
+            session = RtspSession(source, self)
+            self.sessions[session.id] = session
+        elif session.playing:
+            await self._respond(request, 455)
+            return
+
+        track = Track(track_id, "audio" if track_id == AUDIO_TRACK else "video")
+
+        transport = request.header("transport", "")
         lower = transport.lower()
         if "rtp/avp/tcp" in lower or "interleaved" in lower:
-            channels = (0, 1)
+            # Default channels step by two so a second track does not collide.
+            channels = (track_id * 2, track_id * 2 + 1)
             for field in transport.split(";"):
                 field = field.strip()
                 if field.lower().startswith("interleaved="):
@@ -411,7 +472,7 @@ class RtspConnection(object):
                         channels = (int(values[0]), int(values[1]) if len(values) > 1 else int(values[0]) + 1)
                     except (ValueError, IndexError):
                         pass
-            session.interleaved = channels
+            track.interleaved = channels
             response_transport = "RTP/AVP/TCP;unicast;interleaved={}-{}".format(*channels)
 
         elif "rtp/avp" in lower:
@@ -440,28 +501,30 @@ class RtspConnection(object):
                 await self._respond(request, 500)
                 return
 
-            session.udp_socket = rtp_sock
-            session.udp_rtcp_socket = rtcp_sock
-            session.server_rtp_port = rtp_port
-            session.server_rtcp_port = rtcp_port
-            session.client_addr = self.peer[0] if self.peer else "127.0.0.1"
-            session.client_rtp_port = client_ports[0]
-            session.client_rtcp_port = client_ports[1]
+            track.udp_socket = rtp_sock
+            track.udp_rtcp_socket = rtcp_sock
+            track.server_rtp_port = rtp_port
+            track.server_rtcp_port = rtcp_port
+            track.client_addr = self.peer[0] if self.peer else "127.0.0.1"
+            track.client_rtp_port = client_ports[0]
+            track.client_rtcp_port = client_ports[1]
             response_transport = (
                 "RTP/AVP;unicast;client_port={}-{};server_port={}-{};ssrc={:08X}".format(
-                    client_ports[0], client_ports[1], rtp_port, rtcp_port, 0x5245_4F4C
+                    client_ports[0], client_ports[1], rtp_port, rtcp_port,
+                    0x5245_4F4C + track_id,
                 )
             )
         else:
             await self._respond(request, 461)
             return
 
-        self.sessions[session.id] = session
+        session.tracks[track_id] = track
         _LOG.info(
-            "%s: SETUP %s over %s",
+            "%s: SETUP %s %s track over %s",
             self._peer_str(),
             source.name,
-            "TCP" if session.transport_is_tcp() else "UDP",
+            track.kind,
+            "TCP" if track.is_tcp else "UDP",
         )
         await self._respond(
             request,
@@ -487,12 +550,28 @@ class RtspConnection(object):
             return
 
         source = session.source
-        session.subscriber = source.subscribe()
-        session.packetizer = RtpPacketizer(
-            source.codec or "H264", payload_type=PAYLOAD_TYPE, mtu=self.server.mtu
-        )
+        if not session.tracks:  # PLAY without SETUP
+            await self._respond(request, 455)
+            return
 
-        _LOG.info("%s: PLAY %s", self._peer_str(), source.name)
+        session.subscriber = source.subscribe()
+        for track in session.tracks.values():
+            if track.kind == "audio":
+                track.packetizer = RtpPacketizer(
+                    "AAC", payload_type=AUDIO_PAYLOAD_TYPE, mtu=self.server.mtu,
+                    ssrc=0x5245_4F4C + track.id,
+                )
+            else:
+                track.packetizer = RtpPacketizer(
+                    source.codec or "H264", payload_type=PAYLOAD_TYPE,
+                    mtu=self.server.mtu,
+                )
+
+        _LOG.info(
+            "%s: PLAY %s (%s)",
+            self._peer_str(), source.name,
+            ", ".join(sorted(t.kind for t in session.tracks.values())),
+        )
         # The response must reach the client before any interleaved RTP, or the
         # client parses media bytes as the reply and desynchronises. Only start
         # pumping once the reply is on the wire.
@@ -502,8 +581,12 @@ class RtspConnection(object):
             {
                 "Session": session.id,
                 "Range": "npt=now-",
-                "RTP-Info": "url={};seq={};rtptime={}".format(
-                    request.uri.rstrip("/"), session.packetizer.sequence, 0
+                "RTP-Info": ",".join(
+                    "url={}/trackID={};seq={};rtptime=0".format(
+                        request.uri.rstrip("/"), track.id,
+                        track.packetizer.sequence,
+                    )
+                    for track in sorted(session.tracks.values(), key=lambda t: t.id)
                 ),
             },
         )
@@ -536,8 +619,7 @@ class RtspConnection(object):
     # ------------------------------------------------------------------ #
 
     async def _pump(self, session):
-        """Pull access units and push RTP until the session ends."""
-        packetizer = session.packetizer
+        """Pull media units and push RTP on the matching track until the end."""
         subscriber = session.subscriber
         loop = asyncio.get_running_loop()
         try:
@@ -545,16 +627,29 @@ class RtspConnection(object):
                 unit = await subscriber.queue.get()
                 if unit is None:
                     break
-                packets = packetizer.packetize(unit.nals, unit.timestamp)
-                if session.transport_is_tcp():
+
+                track = session.track_for(getattr(unit, "kind", "video"))
+                if track is None or track.packetizer is None:
+                    continue  # client did not set this track up
+
+                if track.kind == "audio":
+                    packets = track.packetizer.packetize_aac(
+                        unit.frames, unit.timestamp
+                    )
+                else:
+                    packets = track.packetizer.packetize(unit.nals, unit.timestamp)
+                if not packets:
+                    continue
+
+                if track.is_tcp:
                     blob = bytearray()
-                    channel = session.interleaved[0]
+                    channel = track.interleaved[0]
                     for packet in packets:
                         blob += b"$" + bytes([channel]) + struct.pack("!H", len(packet))
                         blob += packet
                     await self._send(bytes(blob))
                 else:
-                    await self._send_udp(session, packets, loop)
+                    await self._send_udp(track, packets, loop)
         except asyncio.CancelledError:
             raise
         except (ConnectionResetError, BrokenPipeError):
@@ -564,7 +659,7 @@ class RtspConnection(object):
         finally:
             session.playing = False
 
-    async def _send_udp(self, session, packets, loop):
+    async def _send_udp(self, track, packets, loop):
         """Send an access unit over UDP, paced so we do not overrun buffers.
 
         A 2560x1440 key frame is ~165 KB, which is well over a hundred
@@ -573,8 +668,8 @@ class RtspConnection(object):
         Spreading the burst over a few milliseconds fixes it, and is still far
         inside the inter-frame gap.
         """
-        target = (session.client_addr, session.client_rtp_port)
-        sock = session.udp_socket
+        target = (track.client_addr, track.client_rtp_port)
+        sock = track.udp_socket
         burst = self.server.udp_burst
         delay = self.server.udp_burst_delay
 
