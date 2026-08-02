@@ -166,7 +166,10 @@ class CameraSource(object):
                 backoff = 1.0
             except LoginFailed as exc:
                 self.last_error = str(exc)
-                _LOG.error("%s: %s - check credentials, not retrying fast", self.name, exc)
+                _LOG.error(
+                    "%s: %s. Pass --password=... or set it in the config; "
+                    "backing off before retrying.", self.name, exc,
+                )
                 backoff = 60.0
             except asyncio.CancelledError:
                 raise

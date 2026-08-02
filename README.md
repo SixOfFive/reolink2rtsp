@@ -166,6 +166,32 @@ There are two independent sets and it matters which is which:
 
 Any value supports `${VAR}` and `${VAR:-fallback}`.
 
+#### Supplying the camera password
+
+Three ways, highest precedence first:
+
+```bash
+python -m reolink2rtsp serve --password='your-password'          # all cameras
+python -m reolink2rtsp serve -o camera:driveway.password='...'   # one camera
+export REOLINK_PASSWORD='your-password'                          # via ${VAR}
+```
+
+`--password` always wins, including over a `${REOLINK_PASSWORD}` in the config
+that is unset or empty — the command line is applied after the file is read, so
+an unset variable is not an error by itself. What *is* an error is ending up
+with no password at all, and that is reported at startup naming the camera and
+the variable rather than surfacing later as a puzzling `401`:
+
+```
+ERROR camera 'driveway' has no password (the config references $REOLINK_PASSWORD,
+which is not set). Pass --password=... on the command line, set the environment
+variable, or put password = ... in the config
+```
+
+On Windows, note that `set VAR=x` only affects the current `cmd` session and
+`$env:VAR = 'x'` only the current PowerShell session — neither reaches a
+different terminal. `--password=` avoids the whole problem.
+
 ### Ports below 1024
 
 The default `base_port` is **8554**, which needs no privileges anywhere. 554 is

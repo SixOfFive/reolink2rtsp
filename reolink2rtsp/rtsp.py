@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import errno
 import hashlib
 import logging
 import os
@@ -761,6 +762,16 @@ class RtspServer(object):
                 "with privileges, grant CAP_NET_BIND_SERVICE, or set base_port "
                 "to 8554 in the config)".format(self.port)
             )
+        except OSError as exc:
+            if exc.errno in (errno.EADDRINUSE, errno.EACCES) or "10048" in str(exc):
+                raise OSError(
+                    "port {} is already in use - another reolink2rtsp (or "
+                    "something else) is listening. Stop it, or choose another "
+                    "port with --base-port or rtsp_port in the config.".format(
+                        self.port
+                    )
+                ) from exc
+            raise
         host = self.bind if self.bind not in ("0.0.0.0", "::") else "<host>"
         auth = ""
         if self.users:

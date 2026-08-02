@@ -31,23 +31,37 @@ class ConfigError(Exception):
     pass
 
 
-def _expand(value):
-    """Replace ${VAR} / ${VAR:-default} with the environment."""
+def _expand(value, missing=None):
+    """Replace ${VAR} / ${VAR:-default} with the environment.
+
+    An unset variable expands to empty rather than raising, because the command
+    line is applied *after* the config is read and may well be supplying the
+    value (``--password`` being the obvious case). Anything still missing that
+    actually matters is reported later by :meth:`Config.validate`, which can
+    give a far more useful message than "variable not set".
+    """
     if value is None:
         return None
 
     def replace(match):
         name, default = match.group(1), match.group(2)
         found = os.environ.get(name)
-        if found is not None:
+        if found:
             return found
         if default is not None:
             return default
-        raise ConfigError(
-            "environment variable {} is referenced in the config but not set".format(name)
-        )
+        if missing is not None:
+            missing.add(name)
+        elif _MISSING_ENV is not None:
+            _MISSING_ENV.add(name)
+        return ""
 
     return _ENV_PATTERN.sub(replace, value)
+
+
+# Environment variables referenced by the config but not set, collected during
+# load() so validate() can name them.
+_MISSING_ENV = set()
 
 
 def _parse_streams(raw):
@@ -149,13 +163,41 @@ class CameraConfig(object):
 
 class Config(object):
     def __init__(self, bind="0.0.0.0", mtu=1400, log_level="INFO", cameras=None,
-                 describe_timeout=20.0, status_port=0):
+                 describe_timeout=20.0, status_port=0, missing_env=None):
         self.bind = bind
         self.mtu = mtu
         self.log_level = log_level
         self.cameras = cameras or []
         self.describe_timeout = describe_timeout
         self.status_port = status_port
+        self.missing_env = set(missing_env or ())
+
+    def validate(self):
+        """Check everything needed to actually connect is present.
+
+        Called after command-line overrides, so a value supplied with
+        ``--password`` counts even though the config file referenced an unset
+        environment variable.
+        """
+        problems = []
+        for camera in self.cameras:
+            if not camera.enabled:
+                continue
+            if not camera.host:
+                problems.append("camera {!r} has no host".format(camera.name))
+            if not camera.password:
+                hint = ""
+                if self.missing_env:
+                    hint = " (the config references ${}, which is not set)".format(
+                        "}, ${".join(sorted(self.missing_env)))
+                problems.append(
+                    "camera {!r} has no password{}. Pass --password=... on the "
+                    "command line, set the environment variable, or put "
+                    "password = ... in the config".format(camera.name, hint)
+                )
+        if problems:
+            raise ConfigError("; ".join(problems))
+        return self
 
     def by_port(self):
         """Group enabled cameras by the RTSP port they are served on."""
@@ -225,6 +267,7 @@ def load(path, overrides=None):
 
     *path* may be None or missing when overrides alone define the cameras.
     """
+    _MISSING_ENV.clear()
     parser = configparser.RawConfigParser()
     parser.optionxform = str  # keep key case as written
 
@@ -351,4 +394,5 @@ def load(path, overrides=None):
         cameras=cameras,
         describe_timeout=describe_timeout,
         status_port=status_port,
+        missing_env=set(_MISSING_ENV),
     )

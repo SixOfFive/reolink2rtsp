@@ -632,8 +632,8 @@ class BaichuanClient(object):
         if msg.has_status and msg.response_code not in (0, 200, 201, 300):
             if msg.response_code == 401:
                 raise LoginFailed(
-                    "{}: 401 unauthorized - check the camera username/password".format(
-                        self.host
+                    "{}: 401 unauthorized, the camera rejected user {!r}".format(
+                        self.host, self.username
                     )
                 )
             raise BaichuanError(

@@ -75,7 +75,13 @@ async def _serve(config):
         return 1
 
     for server in servers:
-        await server.start()
+        try:
+            await server.start()
+        except (OSError, PermissionError) as exc:
+            _LOG.error("%s", exc)
+            for started in servers:
+                await started.stop()
+            return 1
 
     _LOG.info(
         "reolink2rtsp %s ready - %d camera(s) on %d port(s)",
@@ -453,6 +459,7 @@ def main(argv=None):
     try:
         config = load(args.config, overrides)
         _apply_camera_flags(config, args)
+        config.validate()
     except ConfigError as exc:
         _setup_logging(args.log_level or "INFO")
         _LOG.error("%s", exc)
