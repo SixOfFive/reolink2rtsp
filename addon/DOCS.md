@@ -24,10 +24,10 @@ network twice.
 log_level: info
 base_port: 8600
 mtu: 1400
-rtsp_users: "test:test"
+rtsp_users: "RTSP_USER:RTSP_PASS"
 cameras:
   - name: driveway
-    host: 192.168.15.60
+    host: 192.0.2.10
     username: admin
     password: YOUR-CAMERA-PASSWORD
     stream: sub
@@ -63,10 +63,10 @@ Each camera serves its configured stream at the bare path, and its other
 encodes on sub-paths:
 
 ```
-rtsp://test:test@<ha-ip>:8600/driveway           the configured stream
-rtsp://test:test@<ha-ip>:8600/driveway/sub       640x360     ~0.3 Mbit/s
-rtsp://test:test@<ha-ip>:8600/driveway/extern    896x512     ~1.2 Mbit/s
-rtsp://test:test@<ha-ip>:8600/driveway/main      2560x1440   ~3.2 Mbit/s
+rtsp://RTSP_USER:RTSP_PASS@<ha-ip>:8600/driveway           the configured stream
+rtsp://RTSP_USER:RTSP_PASS@<ha-ip>:8600/driveway/sub       640x360     ~0.3 Mbit/s
+rtsp://RTSP_USER:RTSP_PASS@<ha-ip>:8600/driveway/extern    896x512     ~1.2 Mbit/s
+rtsp://RTSP_USER:RTSP_PASS@<ha-ip>:8600/driveway/main      2560x1440   ~3.2 Mbit/s
 ```
 
 The camera encodes all three simultaneously, so switching costs nothing.
@@ -82,7 +82,7 @@ go2rtc is built into recent Home Assistant. Add to its config:
 
 ```yaml
 streams:
-  driveway: rtsp://test:test@127.0.0.1:8600/driveway
+  driveway: rtsp://RTSP_USER:RTSP_PASS@127.0.0.1:8600/driveway
 ```
 
 Or in Frigate:
@@ -92,9 +92,9 @@ cameras:
   driveway:
     ffmpeg:
       inputs:
-        - path: rtsp://test:test@127.0.0.1:8600/driveway
+        - path: rtsp://RTSP_USER:RTSP_PASS@127.0.0.1:8600/driveway
           roles: [detect]
-        - path: rtsp://test:test@127.0.0.1:8600/driveway/main
+        - path: rtsp://RTSP_USER:RTSP_PASS@127.0.0.1:8600/driveway/main
           roles: [record]
 ```
 
@@ -111,3 +111,41 @@ detection does not benefit from 2560×1440, and it keeps CPU down.
 * Ports below 1024 are not usable here; `base_port` defaults to **8600**, deliberately clear of 8554 - Frigate's built-in go2rtc listens there, and with host networking they would collide.
 * Updating means rebuilding the add-on, which pulls the current source from
   GitHub.
+
+## Appendix: driving Home Assistant and Frigate over the API
+
+Useful if you have no SSH, developer console or Samba on Home Assistant OS and
+need to configure things remotely. All of this works with a long-lived access
+token belonging to an owner account.
+
+**The REST Supervisor proxy does not accept long-lived tokens.** `GET
+/api/hassio/...` returns 401 regardless of admin rights. The working route is
+the WebSocket API:
+
+```json
+{"type": "supervisor/api", "endpoint": "/addons/<slug>/info", "method": "get"}
+```
+
+That reaches any Supervisor endpoint, which is how you discover an add-on's
+state, its network mapping, and its `ingress_entry`.
+
+**Add-on APIs are reachable through ingress, but need a session cookie**, not a
+bearer token. Mint one with Supervisor endpoint `/ingress/session` (POST), then
+request `http://<ha>:8123<ingress_entry><path>` with header
+`Cookie: ingress_session=<token>`. A bearer token alone gets 401.
+
+Frigate's own API is then available, including `GET /api/config/raw`,
+`POST /api/config/save?save_option=saveonly` (which validates before writing),
+`POST /api/restart`, `GET /api/stats` and `GET /api/<camera>/latest.jpg`.
+
+Two things worth checking before configuring Frigate:
+
+* **How the Frigate add-on is networked.** It commonly runs bridged rather than
+  on the host network, publishing only its WebRTC port. If so, `127.0.0.1` from
+  inside Frigate is the container, not the host, and reolink2rtsp must be
+  addressed by the Home Assistant machine's IP. `/addons/<slug>/info` reports
+  `host_network` and the port map.
+* **Free disk**, via Supervisor `/host/info`. Recording three 2560x1440 cameras
+  is roughly 3 GB/hour; a Home Assistant OS install with ~10 GB free will fill
+  in a few hours and take Home Assistant with it. Enable recording only against
+  storage sized for it, and prefer detection on the substream.

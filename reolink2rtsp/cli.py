@@ -326,7 +326,7 @@ def build_parser():
         help="override any config value; repeatable. A bare KEY=VALUE targets "
              "[server]. Sections are created on demand, so cameras can be "
              "defined entirely from the command line, e.g. "
-             "-o camera:test.host=192.168.15.60 -o camera:test.rtsp_port=8554",
+             "-o camera:test.host=192.0.2.10 -o camera:test.rtsp_port=8554",
     )
     # Convenience shorthands for the [server] section.
     serve.add_argument("--bind", help="address to listen on")
@@ -344,7 +344,7 @@ def build_parser():
         help="stream to pull from all cameras",
     )
     serve.add_argument(
-        "--users", help="RTSP logins for all cameras, e.g. 'test:test, ops:pw'"
+        "--users", help="RTSP logins for all cameras, e.g. 'user1:pass1, user2:pass2'"
     )
     serve.add_argument(
         "--only", metavar="NAME", action="append",

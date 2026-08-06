@@ -241,7 +241,7 @@ def apply_overrides(parser, overrides):
     A bare ``KEY=VALUE`` targets ``[server]``. Sections are created on demand,
     so a whole camera can be defined from the command line alone::
 
-        -o camera:test.host=192.168.15.60 -o camera:test.rtsp_port=8554
+        -o camera:test.host=192.0.2.10 -o camera:test.rtsp_port=8554
     """
     for item in overrides or ():
         if "=" not in item:

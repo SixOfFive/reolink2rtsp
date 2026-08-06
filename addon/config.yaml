@@ -23,26 +23,26 @@ options:
   log_level: info
   base_port: 8600
   mtu: 1400
-  rtsp_users: test:test
+  rtsp_users: RTSP_USER:RTSP_PASS
   cameras:
     - name: driveway
-      host: 192.168.15.60
+      host: 192.0.2.10
       username: admin
       password: ""
       stream: sub
       rtsp_port: 8600
       audio: true
       enabled: true
-    - name: living_room
-      host: 192.168.15.62
+    - name: side_gate
+      host: 192.0.2.12
       username: admin
       password: ""
       stream: sub
       rtsp_port: 8601
       audio: true
       enabled: true
-    - name: work_area
-      host: 192.168.15.64
+    - name: back_door
+      host: 192.0.2.14
       username: admin
       password: ""
       stream: sub

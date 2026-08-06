@@ -4,9 +4,9 @@
 # add-on on the same Home Assistant host.
 #
 # Replace before use:
-#   HA_HOST_IP            the Home Assistant machine's LAN IP, e.g. 192.168.15.21
+#   HA_HOST_IP            the Home Assistant machine's LAN IP, e.g. 192.0.2.2
 #   RTSP_USER/RTSP_PASS   the `rtsp_users` set in the reolink2rtsp add-on
-#                         (shipped default: test:test)
+#                         (set in the add-on options)
 #   FRIGATE_MQTT_*        an MQTT user you create for Frigate on Mosquitto
 #
 # Why the host IP and not 127.0.0.1 for reolink2rtsp: that add-on uses host
@@ -33,14 +33,14 @@ go2rtc:
       - rtsp://RTSP_USER:RTSP_PASS@HA_HOST_IP:8600/driveway
     driveway_main:
       - rtsp://RTSP_USER:RTSP_PASS@HA_HOST_IP:8600/driveway/main
-    living_room:
-      - rtsp://RTSP_USER:RTSP_PASS@HA_HOST_IP:8601/living_room
-    living_room_main:
-      - rtsp://RTSP_USER:RTSP_PASS@HA_HOST_IP:8601/living_room/main
-    work_area:
-      - rtsp://RTSP_USER:RTSP_PASS@HA_HOST_IP:8602/work_area
-    work_area_main:
-      - rtsp://RTSP_USER:RTSP_PASS@HA_HOST_IP:8602/work_area/main
+    side_gate:
+      - rtsp://RTSP_USER:RTSP_PASS@HA_HOST_IP:8601/side_gate
+    side_gate_main:
+      - rtsp://RTSP_USER:RTSP_PASS@HA_HOST_IP:8601/side_gate/main
+    back_door:
+      - rtsp://RTSP_USER:RTSP_PASS@HA_HOST_IP:8602/back_door
+    back_door_main:
+      - rtsp://RTSP_USER:RTSP_PASS@HA_HOST_IP:8602/back_door/main
 
 detectors:
   # Swap for a Coral or OpenVINO detector if you have one; cpu works but is slow.
@@ -96,23 +96,23 @@ cameras:
           input_args: preset-rtsp-restream
           roles: [record]
 
-  living_room:
+  side_gate:
     ffmpeg:
       inputs:
-        - path: rtsp://127.0.0.1:8554/living_room
+        - path: rtsp://127.0.0.1:8554/side_gate
           input_args: preset-rtsp-restream
           roles: [detect]
-        - path: rtsp://127.0.0.1:8554/living_room_main
+        - path: rtsp://127.0.0.1:8554/side_gate_main
           input_args: preset-rtsp-restream
           roles: [record]
 
-  work_area:
+  back_door:
     ffmpeg:
       inputs:
-        - path: rtsp://127.0.0.1:8554/work_area
+        - path: rtsp://127.0.0.1:8554/back_door
           input_args: preset-rtsp-restream
           roles: [detect]
-        - path: rtsp://127.0.0.1:8554/work_area_main
+        - path: rtsp://127.0.0.1:8554/back_door_main
           input_args: preset-rtsp-restream
           roles: [record]
 

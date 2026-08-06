@@ -6,7 +6,7 @@ Some Reolink models — the Lumus E430 among them — ship with no RTSP, no ONVI
 no RTMP and no HTTP API. Port scan one and you get a single open port:
 
 ```
-192.168.15.60   closed 80  closed 443  closed 554  closed 8000   OPEN 9000
+192.0.2.10   closed 80  closed 443  closed 554  closed 8000   OPEN 9000
 ```
 
 TCP 9000 is Reolink's proprietary **Baichuan** protocol, the one their phone app
@@ -84,7 +84,7 @@ export REOLINK_PASSWORD='your-camera-password'
 Check a camera answers before wiring anything up:
 
 ```bash
-python -m reolink2rtsp probe 192.168.15.60 --password "$REOLINK_PASSWORD"
+python -m reolink2rtsp probe 192.0.2.10 --password "$REOLINK_PASSWORD"
 ```
 
 Then run the server:
@@ -96,19 +96,19 @@ python -m reolink2rtsp serve -c reolink2rtsp.ini
 Streams are now live, each camera on its own port, video plus audio:
 
 ```
-rtsp://test:test@<host>:8554/driveway
-rtsp://test:test@<host>:8555/living_room
-rtsp://test:test@<host>:8556/work_area
+rtsp://RTSP_USER:RTSP_PASS@<host>:8554/driveway
+rtsp://RTSP_USER:RTSP_PASS@<host>:8555/side_gate
+rtsp://RTSP_USER:RTSP_PASS@<host>:8556/back_door
 ```
 
 Each camera also publishes its other encodes on sub-paths, so a client picks
 resolution by URL:
 
 ```
-rtsp://test:test@<host>:8554/driveway           640x360    (the configured default)
-rtsp://test:test@<host>:8554/driveway/sub       640x360
-rtsp://test:test@<host>:8554/driveway/extern    896x512
-rtsp://test:test@<host>:8554/driveway/main      2560x1440
+rtsp://RTSP_USER:RTSP_PASS@<host>:8554/driveway           640x360    (the configured default)
+rtsp://RTSP_USER:RTSP_PASS@<host>:8554/driveway/sub       640x360
+rtsp://RTSP_USER:RTSP_PASS@<host>:8554/driveway/extern    896x512
+rtsp://RTSP_USER:RTSP_PASS@<host>:8554/driveway/main      2560x1440
 ```
 
 RTSP has no way for a client to *request* a resolution — `DESCRIBE` publishes
@@ -125,7 +125,7 @@ quietly falling back to the parent.
 Verify with ffprobe:
 
 ```bash
-ffprobe -rtsp_transport tcp rtsp://test:test@127.0.0.1:8554/driveway
+ffprobe -rtsp_transport tcp rtsp://RTSP_USER:RTSP_PASS@127.0.0.1:8554/driveway
 ```
 
 ## Configuration
@@ -141,15 +141,15 @@ base_port = 8554       ; cameras without an explicit rtsp_port count up from her
 mtu       = 1400
 
 [defaults]
-users = test:test      ; applied to any camera that doesn't list its own
+users = RTSP_USER:RTSP_PASS      ; applied to any camera that doesn't list its own
 
 [camera:driveway]
-host      = 192.168.15.60
+host      = 192.0.2.10
 username  = admin
 password  = ${REOLINK_PASSWORD}   ; never a literal
 stream    = sub                   ; main | extern | sub - the default for /driveway
 rtsp_port = 8554
-users     = test:test, frigate:somethingelse
+users     = RTSP_USER:RTSP_PASS, frigate:ANOTHER_PASS
 ```
 
 ### Credentials
@@ -159,7 +159,7 @@ There are two independent sets and it matters which is which:
 | | What it is | Where it lives |
 |---|---|---|
 | **Camera** `username`/`password` | The Reolink login, used to authenticate *to* the camera on port 9000 | `${ENV_VAR}` only — real values must never be committed |
-| **RTSP** `users` | Logins clients use to pull the stream *from* this bridge | Fine to keep in the config; `test:test` by default |
+| **RTSP** `users` | Logins clients use to pull the stream *from* this bridge | Fine to keep in the config; placeholders you must set |
 
 `reolink2rtsp.ini` is gitignored for exactly this reason. Only
 `reolink2rtsp.ini.example`, which contains no camera secrets, is committed.
@@ -229,7 +229,7 @@ cameras:
   driveway:
     ffmpeg:
       inputs:
-        - path: rtsp://test:test@192.168.15.3:8554/driveway
+        - path: rtsp://RTSP_USER:RTSP_PASS@192.0.2.2:8554/driveway
           input_args: preset-rtsp-restream
           roles: [detect, record]
 ```
@@ -280,7 +280,7 @@ extra_streams = none                ; publish only the configured stream
 **2. Retune the camera's encoder.** Inspect what a camera is doing:
 
 ```bash
-python -m reolink2rtsp encoder 192.168.15.60
+python -m reolink2rtsp encoder 192.0.2.10
 ```
 
 ```
@@ -293,7 +293,7 @@ python -m reolink2rtsp encoder 192.168.15.60
 Change it, with a readback to confirm:
 
 ```bash
-python -m reolink2rtsp encoder 192.168.15.60 -s sub --bitrate 512 --framerate 15
+python -m reolink2rtsp encoder 192.0.2.10 -s sub --bitrate 512 --framerate 15
 ```
 
 Or set it in the config, and it is applied automatically on every connect:
@@ -393,7 +393,7 @@ are created on demand, so a camera can be defined entirely in argv:
 
 ```bash
 python -m reolink2rtsp serve \
-    -o camera:test.host=192.168.15.60 \
+    -o camera:test.host=192.0.2.10 \
     -o camera:test.rtsp_port=8554 \
     --password "$REOLINK_PASSWORD" --stream sub
 ```

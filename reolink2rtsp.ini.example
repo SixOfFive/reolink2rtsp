@@ -38,7 +38,7 @@ log_level = INFO
 [defaults]
 ; RTSP logins applied to any camera that does not list its own.
 ; Format: user:pass, separated by commas or newlines. Multiple pairs allowed.
-users = test:test
+users = RTSP_USER:RTSP_PASS
 
 
 ; --------------------------------------------------------------------------
@@ -65,32 +65,29 @@ users = test:test
 ; audio      - serve the camera's AAC audio as a second RTSP track (default true)
 ; --------------------------------------------------------------------------
 
-; Home Assistant device "Driveway"  (HA entities are named porch_*)
 [camera:driveway]
-host       = 192.168.15.60
+host       = 192.0.2.10
 username   = admin
 password   = ${REOLINK_PASSWORD}
 stream     = sub
 rtsp_port  = 8554
-users      = test:test
+users      = RTSP_USER:RTSP_PASS
 
-; Home Assistant device "Living Room"  (HA entities are named front_*)
-[camera:living_room]
-host       = 192.168.15.62
+[camera:side_gate]
+host       = 192.0.2.12
 username   = admin
 password   = ${REOLINK_PASSWORD}
 stream     = sub
 rtsp_port  = 8555
-users      = test:test
+users      = RTSP_USER:RTSP_PASS
 
-; Home Assistant device "Work Area"  (HA entities are named driveway_*)
-[camera:work_area]
-host       = 192.168.15.64
+[camera:back_door]
+host       = 192.0.2.14
 username   = admin
 password   = ${REOLINK_PASSWORD}
 stream     = sub
 rtsp_port  = 8556
-users      = test:test
+users      = RTSP_USER:RTSP_PASS
 
 
 ; --------------------------------------------------------------------------
@@ -98,23 +95,20 @@ users      = test:test
 ; Set enabled = true once the camera is reachable.
 ; --------------------------------------------------------------------------
 
-; Home Assistant device "Back Yard"  (HA entities are named garage_*)
 [camera:back_yard]
 enabled    = false
-host       = 192.168.15.63
+host       = 192.0.2.13
 username   = admin
 password   = ${REOLINK_PASSWORD}
 stream     = sub
 rtsp_port  = 8557
-users      = test:test
+users      = RTSP_USER:RTSP_PASS
 
-; Home Assistant device "Garage"  (HA entities are named back_door_*)
-; MAC 8c:bd:37:35:b2:aa - it did not answer on the LAN, so set the IP when known.
 [camera:garage]
 enabled    = false
-host       = 192.168.15.61
+host       = 192.0.2.11
 username   = admin
 password   = ${REOLINK_PASSWORD}
 stream     = sub
 rtsp_port  = 8558
-users      = test:test
+users      = RTSP_USER:RTSP_PASS
