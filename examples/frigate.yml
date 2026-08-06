@@ -1,0 +1,132 @@
+# Frigate configuration for cameras served by reolink2rtsp.
+#
+# Assumes the reolink2rtsp add-on is running on the same Home Assistant host,
+# which is why every URL is 127.0.0.1 - the stream never leaves the machine.
+# If you run the bridge elsewhere, replace 127.0.0.1 with its IP.
+#
+# Replace RTSP_USER / RTSP_PASS with the `rtsp_users` you set in the add-on
+# (the shipped default is test:test), and the MQTT credentials with a user you
+# create for Frigate on the Mosquitto add-on.
+
+mqtt:
+  enabled: true
+  host: 127.0.0.1
+  port: 1883
+  user: FRIGATE_MQTT_USER
+  password: FRIGATE_MQTT_PASSWORD
+  topic_prefix: frigate
+
+# go2rtc pulls each stream once and Frigate consumes it from there, so the
+# camera only ever sees a single client per stream.
+go2rtc:
+  streams:
+    driveway:
+      - rtsp://RTSP_USER:RTSP_PASS@127.0.0.1:8600/driveway
+    driveway_main:
+      - rtsp://RTSP_USER:RTSP_PASS@127.0.0.1:8600/driveway/main
+    living_room:
+      - rtsp://RTSP_USER:RTSP_PASS@127.0.0.1:8601/living_room
+    living_room_main:
+      - rtsp://RTSP_USER:RTSP_PASS@127.0.0.1:8601/living_room/main
+    work_area:
+      - rtsp://RTSP_USER:RTSP_PASS@127.0.0.1:8602/work_area
+    work_area_main:
+      - rtsp://RTSP_USER:RTSP_PASS@127.0.0.1:8602/work_area/main
+
+detectors:
+  # Swap for a Coral/OpenVINO detector if you have one; cpu works but is slow.
+  cpu1:
+    type: cpu
+    num_threads: 3
+
+# Detect on the 640x360 substream and record the 2560x1440 main stream. Higher
+# resolution does not improve detection but costs a great deal of CPU, and both
+# streams come off the camera already encoded, so this is free.
+go2rtc_defaults: &detect_record
+  ffmpeg:
+    output_args:
+      record: preset-record-generic-audio-copy
+  detect:
+    enabled: true
+    fps: 5
+  record:
+    enabled: true
+    retain:
+      days: 7
+      mode: motion
+    alerts:
+      retain:
+        days: 30
+    detections:
+      retain:
+        days: 30
+  snapshots:
+    enabled: true
+    retain:
+      default: 14
+  objects:
+    track:
+      - person
+      - car
+      - dog
+      - cat
+
+cameras:
+  driveway:
+    <<: *detect_record
+    ffmpeg:
+      inputs:
+        - path: rtsp://127.0.0.1:8554/driveway
+          input_args: preset-rtsp-restream
+          roles: [detect]
+        - path: rtsp://127.0.0.1:8554/driveway_main
+          input_args: preset-rtsp-restream
+          roles: [record]
+    detect:
+      width: 640
+      height: 360
+      fps: 5
+
+  living_room:
+    <<: *detect_record
+    ffmpeg:
+      inputs:
+        - path: rtsp://127.0.0.1:8554/living_room
+          input_args: preset-rtsp-restream
+          roles: [detect]
+        - path: rtsp://127.0.0.1:8554/living_room_main
+          input_args: preset-rtsp-restream
+          roles: [record]
+    detect:
+      width: 640
+      height: 360
+      fps: 5
+
+  work_area:
+    <<: *detect_record
+    ffmpeg:
+      inputs:
+        - path: rtsp://127.0.0.1:8554/work_area
+          input_args: preset-rtsp-restream
+          roles: [detect]
+        - path: rtsp://127.0.0.1:8554/work_area_main
+          input_args: preset-rtsp-restream
+          roles: [record]
+    detect:
+      width: 640
+      height: 360
+      fps: 5
+
+version: 0.14
+
+# Notes
+# -----
+# * Two different servers are in play and the ports matter. reolink2rtsp serves
+#   the cameras on 8600-8602; Frigate's own built-in go2rtc serves its restream
+#   on 8554. The `go2rtc:` block above reads from 8600-8602, and the `cameras:`
+#   block reads go2rtc's restream on 8554. The add-on defaults to 8600 precisely
+#   so it does not collide with Frigate here.
+# * These cameras also offer an 896x512 `extern` stream, which is a reasonable
+#   middle ground for recording if 2560x1440 is more than you want to store.
+# * Audio is served as a second RTSP track (AAC 16 kHz), which is why the record
+#   preset above copies audio.

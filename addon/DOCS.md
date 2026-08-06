@@ -22,7 +22,7 @@ network twice.
 
 ```yaml
 log_level: info
-base_port: 8554
+base_port: 8600
 mtu: 1400
 rtsp_users: "test:test"
 cameras:
@@ -31,7 +31,7 @@ cameras:
     username: admin
     password: YOUR-CAMERA-PASSWORD
     stream: sub
-    rtsp_port: 8554
+    rtsp_port: 8600
 ```
 
 ### Options
@@ -39,7 +39,7 @@ cameras:
 | Option | Meaning |
 |---|---|
 | `rtsp_users` | Logins clients use to pull streams *from* this add-on, `user:pass` comma separated. Not the camera password. |
-| `base_port` | First RTSP port; cameras without `rtsp_port` count up from here. |
+| `base_port` | First RTSP port; cameras without `rtsp_port` count up from here. Defaults to 8600 to stay clear of go2rtc/Frigate on 8554. |
 | `mtu` | RTP payload size. Lower it if you see loss over Wi-Fi or a VPN. |
 
 ### Per camera
@@ -63,10 +63,10 @@ Each camera serves its configured stream at the bare path, and its other
 encodes on sub-paths:
 
 ```
-rtsp://test:test@<ha-ip>:8554/driveway           the configured stream
-rtsp://test:test@<ha-ip>:8554/driveway/sub       640x360     ~0.3 Mbit/s
-rtsp://test:test@<ha-ip>:8554/driveway/extern    896x512     ~1.2 Mbit/s
-rtsp://test:test@<ha-ip>:8554/driveway/main      2560x1440   ~3.2 Mbit/s
+rtsp://test:test@<ha-ip>:8600/driveway           the configured stream
+rtsp://test:test@<ha-ip>:8600/driveway/sub       640x360     ~0.3 Mbit/s
+rtsp://test:test@<ha-ip>:8600/driveway/extern    896x512     ~1.2 Mbit/s
+rtsp://test:test@<ha-ip>:8600/driveway/main      2560x1440   ~3.2 Mbit/s
 ```
 
 The camera encodes all three simultaneously, so switching costs nothing.
@@ -82,7 +82,7 @@ go2rtc is built into recent Home Assistant. Add to its config:
 
 ```yaml
 streams:
-  driveway: rtsp://test:test@127.0.0.1:8554/driveway
+  driveway: rtsp://test:test@127.0.0.1:8600/driveway
 ```
 
 Or in Frigate:
@@ -92,9 +92,9 @@ cameras:
   driveway:
     ffmpeg:
       inputs:
-        - path: rtsp://test:test@127.0.0.1:8554/driveway
+        - path: rtsp://test:test@127.0.0.1:8600/driveway
           roles: [detect]
-        - path: rtsp://test:test@127.0.0.1:8554/driveway/main
+        - path: rtsp://test:test@127.0.0.1:8600/driveway/main
           roles: [record]
 ```
 
@@ -108,6 +108,6 @@ detection does not benefit from 2560×1440, and it keeps CPU down.
 * Home Assistant's own Reolink integration also talks to these cameras on port
   9000. Running both is fine — the cameras accept several sessions — but every
   stream you serve is one more.
-* Ports below 1024 are not usable here; `base_port` defaults to 8554.
+* Ports below 1024 are not usable here; `base_port` defaults to **8600**, deliberately clear of 8554 - Frigate's built-in go2rtc listens there, and with host networking they would collide.
 * Updating means rebuilding the add-on, which pulls the current source from
   GitHub.

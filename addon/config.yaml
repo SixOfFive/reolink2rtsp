@@ -21,7 +21,7 @@ host_network: true
 
 options:
   log_level: info
-  base_port: 8554
+  base_port: 8600
   mtu: 1400
   rtsp_users: test:test
   cameras:
@@ -30,7 +30,7 @@ options:
       username: admin
       password: ""
       stream: sub
-      rtsp_port: 8554
+      rtsp_port: 8600
       audio: true
       enabled: true
     - name: living_room
@@ -38,7 +38,7 @@ options:
       username: admin
       password: ""
       stream: sub
-      rtsp_port: 8555
+      rtsp_port: 8601
       audio: true
       enabled: true
     - name: work_area
@@ -46,7 +46,7 @@ options:
       username: admin
       password: ""
       stream: sub
-      rtsp_port: 8556
+      rtsp_port: 8602
       audio: true
       enabled: true
 
