@@ -1,0 +1,73 @@
+name: reolink2rtsp
+version: "0.1.0"
+slug: reolink2rtsp
+description: >-
+  RTSP bridge for Reolink cameras that have no RTSP, ONVIF or HTTP - speaks
+  their proprietary Baichuan protocol on TCP 9000 and republishes as RTSP.
+url: https://github.com/SixOfFive/reolink2rtsp
+arch:
+  - amd64
+  - aarch64
+  - armv7
+init: false
+startup: services
+boot: auto
+
+# RTP over UDP uses ephemeral ports (20000-30000), which static port mapping
+# cannot express, so the add-on shares the host network instead. That also puts
+# the RTSP server on the same host as go2rtc/Frigate, so they reach it over
+# loopback rather than pulling the stream across the LAN a second time.
+host_network: true
+
+options:
+  log_level: info
+  base_port: 8554
+  mtu: 1400
+  rtsp_users: test:test
+  cameras:
+    - name: driveway
+      host: 192.168.15.60
+      username: admin
+      password: ""
+      stream: sub
+      rtsp_port: 8554
+      audio: true
+      enabled: true
+    - name: living_room
+      host: 192.168.15.62
+      username: admin
+      password: ""
+      stream: sub
+      rtsp_port: 8555
+      audio: true
+      enabled: true
+    - name: work_area
+      host: 192.168.15.64
+      username: admin
+      password: ""
+      stream: sub
+      rtsp_port: 8556
+      audio: true
+      enabled: true
+
+schema:
+  log_level: list(trace|debug|info|notice|warning|error|fatal)?
+  base_port: port?
+  mtu: int(576,9000)?
+  describe_timeout: int(1,120)?
+  rtsp_users: str
+  cameras:
+    - name: match(^[A-Za-z0-9_-]+$)
+      host: str
+      username: str?
+      password: password
+      stream: list(main|extern|sub)?
+      rtsp_port: port?
+      rtsp_users: str?
+      extra_streams: str?
+      bitrate: int(64,16384)?
+      framerate: int(1,60)?
+      gop: int(1,120)?
+      audio: bool?
+      always_on: bool?
+      enabled: bool?

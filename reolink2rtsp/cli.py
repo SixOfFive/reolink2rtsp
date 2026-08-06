@@ -83,9 +83,11 @@ async def _serve(config):
                 await started.stop()
             return 1
 
+    camera_count = sum(1 for c in config.cameras if c.enabled)
     _LOG.info(
-        "reolink2rtsp %s ready - %d camera(s) on %d port(s)",
+        "reolink2rtsp %s ready - %d camera(s), %d stream(s) on %d port(s)",
         __version__,
+        camera_count,
         len(sources),
         len(servers),
     )

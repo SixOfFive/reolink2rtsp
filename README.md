@@ -206,6 +206,22 @@ sudo setcap 'cap_net_bind_service=+ep' "$(readlink -f "$(which python3)")"
 Windows has no such restriction. If the bind fails, reolink2rtsp says so
 explicitly rather than printing a traceback.
 
+## Home Assistant add-on
+
+If you run Home Assistant OS, the bridge can run there as an add-on — no SSH or
+file access needed, since Supervisor installs it straight from this repository.
+
+1. Settings → Add-ons → Add-on Store → ⋮ → **Repositories**
+2. Add `https://github.com/SixOfFive/reolink2rtsp`
+3. Install **reolink2rtsp**, fill in each camera's password, start it
+
+Running it on the Home Assistant machine means each camera's stream crosses the
+LAN **once**; go2rtc and Frigate then read it over loopback. Running the bridge
+on a different host makes every stream traverse the network twice.
+
+The add-on shares the host network, because RTP-over-UDP uses ephemeral ports
+that static port mapping cannot express. See [addon/DOCS.md](addon/DOCS.md).
+
 ## Frigate
 
 ```yaml
